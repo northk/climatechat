@@ -59,7 +59,7 @@
 │     └─ Tool-use loop (≤5 rounds)           │
 │        └─ Fetch climate data               │
 │  5. Cache write     → KV (with TTL;        │
-│     single-turn requests only)             │
+│     single-turn, non-refusal only)         │
 │  6. Return structured JSON                 │
 └────────────┬──────────────┬───────────────┘
              │ fetch()      │ KV read/write
@@ -108,7 +108,7 @@ climatechat/
 │   ├── tsconfig.json                 # Targets the Workers runtime via @cloudflare/workers-types
 │   └── src/
 │       ├── index.ts                 # Entry point — CORS, routes POST /ask
-│       ├── types.ts                  # Shared types: TextResponse, ChartResponse, WorkerResponse union (Section 4)
+│       ├── types.ts                  # Shared types: TextResponse, RefusalResponse, ChartResponse, WorkerResponse union (Section 4)
 │       ├── claude.ts                # Anthropic SDK, tool-use loop
 │       ├── prompts.ts               # System prompt (anti-hallucination)
 │       ├── rateLimit.ts             # Per-IP KV counter (5 req/day free tier)
@@ -128,7 +128,7 @@ climatechat/
 
 ## 4. Response Envelope (Worker → iOS)
 
-The Worker always returns one of two JSON shapes. The iOS app decodes whichever it receives:
+The Worker always returns one of three JSON shapes. The iOS app decodes whichever it receives:
 
 **Plain text answer:**
 ```json
@@ -137,6 +137,17 @@ The Worker always returns one of two JSON shapes. The iOS app decodes whichever 
   "answer": "Global CO2 levels reached 424 ppm in May 2024, according to NOAA GML..."
 }
 ```
+
+**Refusal answer** (off-topic questions — see Section 6):
+```json
+{
+  "type": "refusal",
+  "answer": "ClimateChat only answers questions about climate change and climate data. Try asking something like: \"How has global CO2 changed since 1960?\""
+}
+```
+Same shape as the plain text answer — `type` and `answer` only. No tool call was made (see Section 6), so there's nothing to inject and no second construction stage, unlike the chart flow below. `RefusalResponse` is defined in `types.ts` alongside `TextResponse` and the chart types, and included in the `WorkerResponse` union the iOS app decodes against.
+
+The iOS app renders this distinctly from a normal text answer (see Phase 4) and shows 2–3 tappable example climate questions below the refusal message — a small fixed set baked into the iOS view (e.g. "What's the current CO2 level?", "Is Arctic sea ice shrinking?", "How much have oceans warmed?"), not parsed out of Claude's `answer` text. Tapping one submits that question through the same send path as manually typed input, giving a fast way back into a climate question after a refusal.
 
 **Chart answer — two-stage construction:**
 
@@ -187,7 +198,7 @@ Swift `Codable` structs will decode the expanded shape directly. `ClimateChartDa
 
 ### Phase 1 — Worker skeleton
 1. `npm create cloudflare@latest worker` in `worker/`, selecting the **TypeScript** "Hello World" Worker template when prompted; confirm Wrangler works
-2. Add `@anthropic-ai/sdk` and `@cloudflare/workers-types` as dependencies (the SDK ships its own types; `@cloudflare/workers-types` covers the Workers runtime globals like `Fetcher` and `KVNamespace`). Confirm the template's `tsconfig.json` includes it. Create `src/types.ts` defining the response envelope types referenced in Section 4 (`TextResponse`, `ChartResponse`, `ClaudeChartResponse`, and the `WorkerResponse` union)
+2. Add `@anthropic-ai/sdk` and `@cloudflare/workers-types` as dependencies (the SDK ships its own types; `@cloudflare/workers-types` covers the Workers runtime globals like `Fetcher` and `KVNamespace`). Confirm the template's `tsconfig.json` includes it. Create `src/types.ts` defining the response envelope types referenced in Section 4 (`TextResponse`, `RefusalResponse`, `ChartResponse`, `ClaudeChartResponse`, and the `WorkerResponse` union)
 3. Set `ANTHROPIC_API_KEY` as a Worker secret via `wrangler secret put`
 4. Create a KV namespace via Cloudflare dashboard, bind it in `wrangler.toml` as `CLIMATE_KV`
 5. Set a monthly hard spend cap in the Anthropic account dashboard (e.g. $20) before any live traffic
@@ -233,7 +244,7 @@ Every tool handler below must return structured JSON as its `tool_result` — pa
 15. Write `prompts.ts` — system prompt with anti-hallucination rules (see Section 6)
 16. Write `claude.ts` — agentic loop: send → check for tool calls → execute → repeat → final response. For `type: "chart"` responses, resolve each dataset's `sourceToolCallId` against the matching `tool_result` already in the conversation and inject the real data points before returning the envelope (see Section 4) — Claude never generates the data array itself
 17. Implement `rateLimit.ts` — KV counter keyed by IP, limit 5 requests/day; return 429 with a friendly JSON error if exceeded. This is a launch prerequisite, not later polish — the Worker cannot go live without it, since `rateLimit.ts` and the KV binding already exist in the Phase 1 setup and the architecture diagram treats it as step 1 of every request
-18. Implement `cache.ts` — KV answer cache keyed by normalized question hash, **single-turn questions only**: skip the cache read/write whenever the request's `messages` array has more than one entry, since a hash of question text alone can't distinguish two different follow-ups with identical wording in different conversations (see R9). TTL 1 hour for current-data questions, 24 hours for long-term trend questions
+18. Implement `cache.ts` — KV answer cache keyed by normalized question hash, **single-turn questions only**: skip the cache read/write whenever the request's `messages` array has more than one entry, since a hash of question text alone can't distinguish two different follow-ups with identical wording in different conversations (see R9). Also skip the cache write whenever Claude's response is `type: "refusal"` — refusals are cheap to regenerate (no tool calls were made), and caching them would waste one of the 1,000 daily KV writes (see R4) on every unique off-topic question someone happens to ask. TTL 1 hour for current-data questions, 24 hours for long-term trend questions
 19. Implement `verifyClient(request)` in `index.ts` — checks the `X-App-Secret` header against the `APP_SECRET` Worker secret (`wrangler secret put APP_SECRET`, same mechanism as `ANTHROPIC_API_KEY`); returns 401 if missing or wrong. Kept as its own function, not inlined, so swapping in Apple App Attest later (see R10) is a one-function change. Built in here, not deferred to Phase 6 hardening — adding this check only after the Phase 5 TestFlight upload would mean the Worker starts rejecting every already-installed build the moment the check ships, since those builds never sent the header
 20. Wire it all into the `POST /ask` handler in this order: `verifyClient(request)` first — reject immediately if the header is missing or wrong, before touching KV at all; then check cache (single-turn questions only) — on a hit, return immediately without touching the rate limiter or writing to KV; on a miss (or any multi-turn request), check rate limit → call Claude (enforcing the JSON response envelope in the system prompt) → write cache (same single-turn-only condition). Checking cache before rate limit means a fully cached answer never costs the user one of their 5 daily questions
 21. Smoke test end-to-end with `curl` — including one request with a missing/incorrect `X-App-Secret` to confirm it's rejected
@@ -241,34 +252,36 @@ Every tool handler below must return structured JSON as its `tool_result` — pa
 ### Phase 4 — iOS app
 22. Create Xcode project: iOS, SwiftUI, Swift, iOS 16 minimum deployment target
 23. Create `Secrets.xcconfig` (gitignored) with an `APP_SECRET` value matching the Worker's secret from Phase 3, plus a committed `Secrets.xcconfig.example` placeholder (see Section 3, R3, R10); wire it into the target's `Info.plist` as `$(APP_SECRET)`. Built in here, not as later hardening, so the very first TestFlight build already sends the header the Worker expects
-24. Build `ClimateAPIService.swift` — async/await URLSession POST, Codable response decoding, attaches the `X-App-Secret` header (read via `Bundle.main.infoDictionary`) on every request
+24. Build `ClimateAPIService.swift` — async/await URLSession POST, Codable response decoding against the `WorkerResponse` union (`text` / `refusal` / `chart`), attaches the `X-App-Secret` header (read via `Bundle.main.infoDictionary`) on every request
 25. Build `Message.swift` and `ClimateChartData.swift` models
 26. Build `ChatView.swift` — scrollable message thread, auto-scroll to latest
 27. Build `MessageBubble.swift` — user message (right-aligned) and assistant message (left-aligned)
 28. Build `InputBar.swift` — text field, send button, disabled state while loading
 29. Add a loading indicator (skeleton or spinner) shown while awaiting the Worker's response — without it, the app freezes silently during the 3–8 second API call, which is unusable. Wire it into `ChatView`/`InputBar`, not deferred to hardening
 30. Build `ClimateChartView.swift` — Swift Charts line and bar chart from decoded payload
-31. Build `ErrorView.swift` — inline error state shown in the chat thread, covering network failure, Worker 5xx, 429 rate-limit, and malformed-response cases, each with a distinct user-facing message. `ClimateAPIService.swift` surfaces these as a typed `APIError` enum so `ChatView` can switch on it
-32. Build `ContentView.swift` — wires all views together
-33. Set the Worker URL in `Config.swift`
+31. Build a refusal view (either a dedicated `RefusalView.swift` or a variant rendered by `MessageBubble.swift`) for `type: "refusal"` responses — visually distinct from a normal text answer (e.g. a muted/secondary bubble style), with 2–3 tappable example-question buttons below the message (see Section 4). Wire each button's tap action to submit that example question through the same send path as manually typed input
+32. Build `ErrorView.swift` — inline error state shown in the chat thread, covering network failure, Worker 5xx, 429 rate-limit, and malformed-response cases, each with a distinct user-facing message. `ClimateAPIService.swift` surfaces these as a typed `APIError` enum so `ChatView` can switch on it
+33. Build `ContentView.swift` — wires all views together
+34. Set the Worker URL in `Config.swift`
 
 ### Phase 5 — Deploy and test
-34. `wrangler deploy` — Worker live on `*.workers.dev`
-35. Update `Config.swift` with the live Worker URL
-36. Run on iOS Simulator — test with sample questions:
+35. `wrangler deploy` — Worker live on `*.workers.dev`
+36. Update `Config.swift` with the live Worker URL
+37. Run on iOS Simulator — test with sample questions:
     - "What is the current atmospheric CO2 level?" (NOAA GML)
     - "Show me how global temperature has changed since 1950" (NOAA NCEI)
     - "Is Portland getting hotter?" (Open-Meteo city lookup)
     - "How much have oceans warmed?" (NOAA NCEI)
+    - "Write me a haiku about pizza" (off-topic) — expect a `type: "refusal"` response with example questions and no tool calls; ask it twice and confirm both requests reach Claude rather than being served from cache (see Phase 3, step 18)
     - A request with a missing or wrong `X-App-Secret` — confirm it's rejected (401), not silently allowed through
-37. Run on a real device via Xcode
-38. Upload to TestFlight via Xcode Organizer → App Store Connect
+38. Run on a real device via Xcode
+39. Upload to TestFlight via Xcode Organizer → App Store Connect
 
 ### Phase 6 — Hardening
-39. Add a 5-second timeout on Worker fetch calls to NOAA GML, NOAA NCEI, NSIDC, and Open-Meteo
-40. Reject user inputs over 500 characters at the Worker before reaching Claude
-41. Refine the iOS error states built in Phase 4 (`ErrorView.swift`): add a retry affordance and cover remaining edge cases (e.g. request timeout vs. no connection) beyond the four core cases already handled
-42. Cap conversation history at 10 exchanges before sending to Worker
+40. Add a 5-second timeout on Worker fetch calls to NOAA GML, NOAA NCEI, NSIDC, and Open-Meteo
+41. Reject user inputs over 500 characters at the Worker before reaching Claude
+42. Refine the iOS error states built in Phase 4 (`ErrorView.swift`): add a retry affordance and cover remaining edge cases (e.g. request timeout vs. no connection) beyond the four core cases already handled
+43. Cap conversation history at 10 exchanges before sending to Worker
 
 ---
 
@@ -280,20 +293,22 @@ These go in `prompts.ts` and are non-negotiable:
 - "If no tool returned data relevant to the question, say so plainly. Do not estimate, extrapolate, or use training knowledge for factual climate figures."
 - "Always cite the exact source name returned by the tool for every number you state: 'NOAA GML' for greenhouse gases (CO2/CH4/N2O), 'NOAA NCEI' for temperature and ocean heat content, 'NSIDC/NOAA Sea Ice Index' for sea ice, or 'Open-Meteo' for city weather. Never attribute NCEI or NSIDC data to NOAA GML — they are different sources."
 - "If two sources return different values for the same measurement, present both and name each source."
-- "Always return a valid JSON object matching one of the two response formats specified. Never return plain text or markdown."
+- "Always return a valid JSON object matching one of the three response formats specified. Never return plain text or markdown."
 - "For chart responses, identify each dataset by `sourceToolCallId` referencing the tool call that produced its data. Never re-type the data points yourself — the Worker injects the actual values from the tool result."
+- "You are ClimateChat — you answer questions about climate change and climate data only. If a question is clearly unrelated to climate (has no plausible connection to climate change, weather trends, greenhouse gases, sea ice, or ocean warming), do not call any tools and do not answer it directly. Instead, return `{\"type\": \"refusal\", \"answer\": \"...\"}`, where the answer briefly explains that ClimateChat only answers climate questions and suggests one example climate question the user could ask instead. Skipping tool calls on refusals keeps them to a single, cheap round-trip."
+- "Err toward answering. Laypeople phrase things loosely — climate-adjacent questions like 'why is Portland so hot today?' or 'will climate change affect my garden?' are in scope and should be answered normally, not refused. Reserve the refusal response for questions with no plausible connection to climate at all (e.g. general trivia, coding help, creative writing unrelated to climate, personal advice)."
 
 ---
 
 ## 7. Cost Controls
 
-Five layers, in order of impact:
+Six layers, in order of impact:
 
 ### 7.1 Anthropic hard spend cap (do this first)
 Set a monthly dollar limit in the Anthropic account dashboard before any live traffic. The API simply stops responding if you hit it — your Worker catches the error and returns a friendly "service temporarily unavailable" message to the iOS app. Set it to whatever you're comfortable losing in a worst-case month (e.g. $20–$50).
 
 ### 7.2 Answer caching via Cloudflare KV
-The single highest-leverage control for this app. Climate data changes slowly — "what is the current CO₂ level?" asked by 500 users today could cost one Anthropic call instead of 500. Cache key = normalized question hash, **single-turn questions only** (see R9 — a question-text hash can't safely represent a follow-up, since the same wording means different things depending on conversation history). TTLs:
+The single highest-leverage control for this app. Climate data changes slowly — "what is the current CO₂ level?" asked by 500 users today could cost one Anthropic call instead of 500. Cache key = normalized question hash, **single-turn questions only** (see R9 — a question-text hash can't safely represent a follow-up, since the same wording means different things depending on conversation history), and **never for `type: "refusal"` responses** — each unique off-topic question would otherwise waste a KV write on an answer that's cheap to regenerate anyway. TTLs:
 - **1 hour** — current-state questions (CO₂ today, current sea ice extent)
 - **24 hours** — long-term trend questions ("has temperature risen since 1900?" — the answer is the same every day)
 - **1 hour** — city-specific questions (Open-Meteo data updates daily at most)
@@ -306,7 +321,10 @@ Track requests per IP address in KV counters. Free tier: 5 questions per user pe
 ### 7.4 Token limits
 Set `max_tokens: 1024` in the Anthropic API call. This is sufficient *because* chart responses carry only metadata (title, labels, a `sourceToolCallId` per dataset, explanation) — the Worker injects the actual data points after Claude responds (see Section 4). Without that split, a single 140-year annual series (~140 `{x, y}` pairs) already exceeds 800 tokens before any labels or explanation, causing Claude's response to truncate mid-JSON — exactly the malformed-response failure mode R2 warns about. Reject user inputs over 500 characters at the Worker before the request reaches Claude.
 
-### 7.5 Future: tiered access via Apple IAP
+### 7.5 Scope enforcement (defense in depth, not a hard backstop)
+Restricting Claude to climate topics (Section 6) is itself a cost control — it keeps ClimateChat from being usable as a free general-purpose Claude frontend, which would burn through the Anthropic spend cap far faster than climate questions ever would, and would do it under the guise of a legitimate-looking app. This is prompt-based, though, not an enforced boundary: a sufficiently motivated user can likely find phrasing that talks Claude past it. The rate limit (7.3) and the hard spend cap (7.1) remain the actual backstops that can't be argued around — scope enforcement sits on top of them as defense in depth, not a replacement for either.
+
+### 7.6 Future: tiered access via Apple IAP
 If the app grows:
 - **Free tier:** 5 questions/day
 - **Pro tier** (Apple in-app purchase): unlimited questions
