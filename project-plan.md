@@ -45,20 +45,22 @@
 ┌────────────▼──────────────────────────────┐
 │         Cloudflare Worker                  │
 │                                            │
-│  1. Cache lookup    → KV (question hash;   │
+│  1. verifyClient(request) → check          │
+│     X-App-Secret header (see R10)          │
+│  2. Cache lookup    → KV (question hash;   │
 │     single-turn requests only)             │
 │     └─ HIT: return immediately —           │
 │        no rate-limit charge, no extra      │
 │        KV write                            │
-│  2. Rate limit check → KV (IP counter)     │
+│  3. Rate limit check → KV (IP counter)     │
 │     (runs on cache miss or any             │
 │     multi-turn request)                    │
-│  3. Call Claude (Anthropic SDK)            │
+│  4. Call Claude (Anthropic SDK)            │
 │     └─ Tool-use loop (≤5 rounds)           │
 │        └─ Fetch climate data               │
-│  4. Cache write     → KV (with TTL;        │
+│  5. Cache write     → KV (with TTL;        │
 │     single-turn requests only)             │
-│  5. Return structured JSON                 │
+│  6. Return structured JSON                 │
 └────────────┬──────────────┬───────────────┘
              │ fetch()      │ KV read/write
 ┌────────────▼────────────┐ │
@@ -229,39 +231,41 @@ Swift `Codable` structs will decode the expanded shape directly. `ClimateChartDa
 16. Write `claude.ts` — agentic loop: send → check for tool calls → execute → repeat → final response. For `type: "chart"` responses, resolve each dataset's `sourceToolCallId` against the matching `tool_result` already in the conversation and inject the real data points before returning the envelope (see Section 4) — Claude never generates the data array itself
 17. Implement `rateLimit.ts` — KV counter keyed by IP, limit 5 requests/day; return 429 with a friendly JSON error if exceeded. This is a launch prerequisite, not later polish — the Worker cannot go live without it, since `rateLimit.ts` and the KV binding already exist in the Phase 1 setup and the architecture diagram treats it as step 1 of every request
 18. Implement `cache.ts` — KV answer cache keyed by normalized question hash, **single-turn questions only**: skip the cache read/write whenever the request's `messages` array has more than one entry, since a hash of question text alone can't distinguish two different follow-ups with identical wording in different conversations (see R9). TTL 1 hour for current-data questions, 24 hours for long-term trend questions
-19. Wire it all into the `POST /ask` handler in this order: check cache first (single-turn questions only) — on a hit, return immediately without touching the rate limiter or writing to KV; on a miss (or any multi-turn request), check rate limit → call Claude (enforcing the JSON response envelope in the system prompt) → write cache (same single-turn-only condition). Checking cache before rate limit means a fully cached answer never costs the user one of their 5 daily questions
-20. Smoke test end-to-end with `curl`
+19. Implement `verifyClient(request)` in `index.ts` — checks the `X-App-Secret` header against the `APP_SECRET` Worker secret (`wrangler secret put APP_SECRET`, same mechanism as `ANTHROPIC_API_KEY`); returns 401 if missing or wrong. Kept as its own function, not inlined, so swapping in Apple App Attest later (see R10) is a one-function change. Built in here, not deferred to Phase 6 hardening — adding this check only after the Phase 5 TestFlight upload would mean the Worker starts rejecting every already-installed build the moment the check ships, since those builds never sent the header
+20. Wire it all into the `POST /ask` handler in this order: `verifyClient(request)` first — reject immediately if the header is missing or wrong, before touching KV at all; then check cache (single-turn questions only) — on a hit, return immediately without touching the rate limiter or writing to KV; on a miss (or any multi-turn request), check rate limit → call Claude (enforcing the JSON response envelope in the system prompt) → write cache (same single-turn-only condition). Checking cache before rate limit means a fully cached answer never costs the user one of their 5 daily questions
+21. Smoke test end-to-end with `curl` — including one request with a missing/incorrect `X-App-Secret` to confirm it's rejected
 
 ### Phase 4 — iOS app
-21. Create Xcode project: iOS, SwiftUI, Swift, iOS 16 minimum deployment target
-22. Build `ClimateAPIService.swift` — async/await URLSession POST, Codable response decoding
-23. Build `Message.swift` and `ClimateChartData.swift` models
-24. Build `ChatView.swift` — scrollable message thread, auto-scroll to latest
-25. Build `MessageBubble.swift` — user message (right-aligned) and assistant message (left-aligned)
-26. Build `InputBar.swift` — text field, send button, disabled state while loading
-27. Add a loading indicator (skeleton or spinner) shown while awaiting the Worker's response — without it, the app freezes silently during the 3–8 second API call, which is unusable. Wire it into `ChatView`/`InputBar`, not deferred to hardening
-28. Build `ClimateChartView.swift` — Swift Charts line and bar chart from decoded payload
-29. Build `ErrorView.swift` — inline error state shown in the chat thread, covering network failure, Worker 5xx, 429 rate-limit, and malformed-response cases, each with a distinct user-facing message. `ClimateAPIService.swift` surfaces these as a typed `APIError` enum so `ChatView` can switch on it
-30. Build `ContentView.swift` — wires all views together
-31. Set the Worker URL in `Config.swift`
+22. Create Xcode project: iOS, SwiftUI, Swift, iOS 16 minimum deployment target
+23. Create `Secrets.xcconfig` (gitignored) with an `APP_SECRET` value matching the Worker's secret from Phase 3, plus a committed `Secrets.xcconfig.example` placeholder (see Section 3, R3, R10); wire it into the target's `Info.plist` as `$(APP_SECRET)`. Built in here, not as later hardening, so the very first TestFlight build already sends the header the Worker expects
+24. Build `ClimateAPIService.swift` — async/await URLSession POST, Codable response decoding, attaches the `X-App-Secret` header (read via `Bundle.main.infoDictionary`) on every request
+25. Build `Message.swift` and `ClimateChartData.swift` models
+26. Build `ChatView.swift` — scrollable message thread, auto-scroll to latest
+27. Build `MessageBubble.swift` — user message (right-aligned) and assistant message (left-aligned)
+28. Build `InputBar.swift` — text field, send button, disabled state while loading
+29. Add a loading indicator (skeleton or spinner) shown while awaiting the Worker's response — without it, the app freezes silently during the 3–8 second API call, which is unusable. Wire it into `ChatView`/`InputBar`, not deferred to hardening
+30. Build `ClimateChartView.swift` — Swift Charts line and bar chart from decoded payload
+31. Build `ErrorView.swift` — inline error state shown in the chat thread, covering network failure, Worker 5xx, 429 rate-limit, and malformed-response cases, each with a distinct user-facing message. `ClimateAPIService.swift` surfaces these as a typed `APIError` enum so `ChatView` can switch on it
+32. Build `ContentView.swift` — wires all views together
+33. Set the Worker URL in `Config.swift`
 
 ### Phase 5 — Deploy and test
-32. `wrangler deploy` — Worker live on `*.workers.dev`
-33. Update `Config.swift` with the live Worker URL
-34. Run on iOS Simulator — test with sample questions:
+34. `wrangler deploy` — Worker live on `*.workers.dev`
+35. Update `Config.swift` with the live Worker URL
+36. Run on iOS Simulator — test with sample questions:
     - "What is the current atmospheric CO2 level?" (NOAA GML)
     - "Show me how global temperature has changed since 1950" (NOAA NCEI)
     - "Is Portland getting hotter?" (Open-Meteo city lookup)
     - "How much have oceans warmed?" (NOAA NCEI)
-35. Run on a real device via Xcode
-36. Upload to TestFlight via Xcode Organizer → App Store Connect
+    - A request with a missing or wrong `X-App-Secret` — confirm it's rejected (401), not silently allowed through
+37. Run on a real device via Xcode
+38. Upload to TestFlight via Xcode Organizer → App Store Connect
 
 ### Phase 6 — Hardening
-37. Add a 5-second timeout on Worker fetch calls to NOAA GML, NOAA NCEI, NSIDC, and Open-Meteo
-38. Reject user inputs over 500 characters at the Worker before reaching Claude
-39. Refine the iOS error states built in Phase 4 (`ErrorView.swift`): add a retry affordance and cover remaining edge cases (e.g. request timeout vs. no connection) beyond the four core cases already handled
-40. Cap conversation history at 10 exchanges before sending to Worker
-41. Add a shared-secret header (e.g. `X-App-Secret`) checked on every request before CORS/rate-limit/cache logic runs — raises the bar against people finding the Worker URL and calling it from a browser (see R10). On the Worker side, set it via `wrangler secret put APP_SECRET`, same as `ANTHROPIC_API_KEY`. On the iOS side, put the value in `Secrets.xcconfig` (gitignored) — not directly in `Config.swift` — exposed to the app via an `Info.plist` entry (`$(APP_SECRET)`) and read at runtime with `Bundle.main.infoDictionary`. This repo is public, so a value hardcoded in committed Swift source would be readable straight off GitHub, defeating even the modest friction it's meant to add; committing it via `Secrets.xcconfig.example` with a placeholder documents the key without exposing the value. Not a hard access-control boundary either way — Apple App Attest is the stronger fix if abuse becomes a real problem. Implement the check as its own `verifyClient(request)` function in `index.ts` rather than inlining the header comparison — swapping in App Attest later becomes a change to one function, not a refactor
+39. Add a 5-second timeout on Worker fetch calls to NOAA GML, NOAA NCEI, NSIDC, and Open-Meteo
+40. Reject user inputs over 500 characters at the Worker before reaching Claude
+41. Refine the iOS error states built in Phase 4 (`ErrorView.swift`): add a retry affordance and cover remaining edge cases (e.g. request timeout vs. no connection) beyond the four core cases already handled
+42. Cap conversation history at 10 exchanges before sending to Worker
 
 ---
 
@@ -338,8 +342,8 @@ The cache key is a hash of the question text alone, which is only safe when ther
 
 ### R10 — Permissive CORS + a discoverable Worker URL invites freeloading
 The iOS app doesn't need CORS at all — permissive CORS (Phase 1, step 6) only benefits browsers, meaning anyone who finds the Worker URL can call it from a web page and spend the app's Claude quota. Rate limiting (7.3) caps the damage per IP but doesn't stop it. Two mitigations, cheapest first:
-- **Shared secret header (Phase 6, step 41):** the iOS app sends a fixed header (e.g. `X-App-Secret`) that the Worker checks against a Worker secret before doing anything else. Stored in a gitignored `Secrets.xcconfig` on the iOS side (see Section 3), never hardcoded directly in committed Swift source — this repo is public, so a value sitting in `Config.swift` would be trivially copyable by anyone browsing GitHub, which would defeat this mitigation before it did anything. Raises the bar against casual scraping and random discovery, though the value still ends up compiled into the shipped app binary and can be extracted by a determined attacker via reverse engineering — not a real access-control boundary, just friction. Distinct from R3: unlike the Anthropic key, this value is *supposed* to live inside the app.
-- **Apple App Attest (future, if abuse actually shows up):** cryptographically proves a request came from a genuine instance of the app running on real Apple hardware, not a browser or script. The correct long-term fix, but meaningfully more setup than this app needs at TestFlight scale — revisit only if the shared-secret header proves insufficient.
+- **Shared secret header (Phase 3, step 19 — Worker; Phase 4, step 23 — iOS):** the iOS app sends a fixed header (e.g. `X-App-Secret`) that the Worker's `verifyClient(request)` checks before doing anything else. Built in from the start rather than added as later hardening — adding the check only after the Phase 5 TestFlight upload would mean the Worker starts rejecting every already-installed build the moment the check ships, since those builds never sent the header. Stored in a gitignored `Secrets.xcconfig` on the iOS side (see Section 3), never hardcoded directly in committed Swift source — this repo is public, so a value sitting in `Config.swift` would be trivially copyable by anyone browsing GitHub, which would defeat this mitigation before it did anything. Raises the bar against casual scraping and random discovery, though the value still ends up compiled into the shipped app binary and can be extracted by a determined attacker via reverse engineering — not a real access-control boundary, just friction. Distinct from R3: unlike the Anthropic key, this value is *supposed* to live inside the app.
+- **Apple App Attest (future, if abuse actually shows up):** cryptographically proves a request came from a genuine instance of the app running on real Apple hardware, not a browser or script. The correct long-term fix, but meaningfully more setup than this app needs at TestFlight scale — revisit only if the shared-secret header proves insufficient. `verifyClient(request)` is kept as its own function specifically so this swap is a one-function change, not a refactor.
 
 ---
 
