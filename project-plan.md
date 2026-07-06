@@ -45,12 +45,19 @@
 ┌────────────▼──────────────────────────────┐
 │         Cloudflare Worker                  │
 │                                            │
-│  1. Rate limit check → KV (IP counter)     │
-│  2. Cache lookup    → KV (question hash)   │
+│  1. Cache lookup    → KV (question hash;   │
+│     single-turn requests only)             │
+│     └─ HIT: return immediately —           │
+│        no rate-limit charge, no extra      │
+│        KV write                            │
+│  2. Rate limit check → KV (IP counter)     │
+│     (runs on cache miss or any             │
+│     multi-turn request)                    │
 │  3. Call Claude (Anthropic SDK)            │
 │     └─ Tool-use loop (≤5 rounds)           │
 │        └─ Fetch climate data               │
-│  4. Cache write     → KV (with TTL)        │
+│  4. Cache write     → KV (with TTL;        │
+│     single-turn requests only)             │
 │  5. Return structured JSON                 │
 └────────────┬──────────────┬───────────────┘
              │ fetch()      │ KV read/write
@@ -200,6 +207,7 @@ Swift `Codable` structs will decode the expanded shape directly. `ClimateChartDa
      - cite as **"NOAA NCEI (NOAAGlobalTemp)"**
    - `get_ocean_heat_content(basin: "world" | "pacific" | "atlantic" | "indian", depth: "700m" | "2000m")` — ocean heat content anomaly (10²² J)
      - `https://www.ncei.noaa.gov/data/oceans/woa/DATA_ANALYSIS/3M_HEAT_CONTENT/DATA/basin/onemonth/ohc_levitus_climdash_monthly.csv` (0-700m) or `ohc2000m_levitus_climdash_monthly.csv` (0-2000m)
+     - ⚠️ Same caveat as the surface-temperature endpoint above — confirm this URL still resolves and the CSV column layout hasn't changed with a live request before writing the parser. NCEI file paths move without notice; this one is no more stable than the Climate at a Glance endpoint just because it looks like a static file
      - cite as **"NOAA NCEI"**
 11. Implement `seaIceIndex.js`:
     - `get_arctic_sea_ice(month: 1-12)` — monthly Arctic sea ice extent (million km²)
@@ -215,7 +223,7 @@ Swift `Codable` structs will decode the expanded shape directly. `ClimateChartDa
 16. Write `claude.js` — agentic loop: send → check for tool calls → execute → repeat → final response. For `type: "chart"` responses, resolve each dataset's `sourceToolCallId` against the matching `tool_result` already in the conversation and inject the real data points before returning the envelope (see Section 4) — Claude never generates the data array itself
 17. Implement `rateLimit.js` — KV counter keyed by IP, limit 5 requests/day; return 429 with a friendly JSON error if exceeded. This is a launch prerequisite, not later polish — the Worker cannot go live without it, since `rateLimit.js` and the KV binding already exist in the Phase 1 setup and the architecture diagram treats it as step 1 of every request
 18. Implement `cache.js` — KV answer cache keyed by normalized question hash, **single-turn questions only**: skip the cache read/write whenever the request's `messages` array has more than one entry, since a hash of question text alone can't distinguish two different follow-ups with identical wording in different conversations (see R9). TTL 1 hour for current-data questions, 24 hours for long-term trend questions
-19. Wire it all into the `POST /ask` handler: check rate limit → check cache (only when the request is a single-turn question) → call Claude (enforcing the JSON response envelope in the system prompt) → write cache (same single-turn-only condition)
+19. Wire it all into the `POST /ask` handler in this order: check cache first (single-turn questions only) — on a hit, return immediately without touching the rate limiter or writing to KV; on a miss (or any multi-turn request), check rate limit → call Claude (enforcing the JSON response envelope in the system prompt) → write cache (same single-turn-only condition). Checking cache before rate limit means a fully cached answer never costs the user one of their 5 daily questions
 20. Smoke test end-to-end with `curl`
 
 ### Phase 4 — iOS app
@@ -247,6 +255,7 @@ Swift `Codable` structs will decode the expanded shape directly. `ClimateChartDa
 38. Reject user inputs over 500 characters at the Worker before reaching Claude
 39. Refine the iOS error states built in Phase 4 (`ErrorView.swift`): add a retry affordance and cover remaining edge cases (e.g. request timeout vs. no connection) beyond the four core cases already handled
 40. Cap conversation history at 10 exchanges before sending to Worker
+41. Add a shared-secret header (e.g. `X-App-Secret`, set as a Worker secret and hardcoded in `Config.swift`) checked on every request before CORS/rate-limit/cache logic runs — raises the bar against people finding the Worker URL and calling it from a browser (see R10). Not a hard access-control boundary; Apple App Attest is the stronger fix if abuse becomes a real problem
 
 ---
 
@@ -265,7 +274,7 @@ These go in `prompts.js` and are non-negotiable:
 
 ## 7. Cost Controls
 
-Four layers, in order of impact:
+Five layers, in order of impact:
 
 ### 7.1 Anthropic hard spend cap (do this first)
 Set a monthly dollar limit in the Anthropic account dashboard before any live traffic. The API simply stops responding if you hit it — your Worker catches the error and returns a friendly "service temporarily unavailable" message to the iOS app. Set it to whatever you're comfortable losing in a worst-case month (e.g. $20–$50).
@@ -279,7 +288,7 @@ The single highest-leverage control for this app. Climate data changes slowly �
 Implemented in `cache.js`; wired into `index.js` before the Claude call.
 
 ### 7.3 Per-user rate limiting via Cloudflare KV
-Track requests per IP address in KV counters. Free tier: 5 questions per user per day. The iOS app receives a clear "you've reached your daily limit" message on a 429 response. Implemented in `rateLimit.js`.
+Track requests per IP address in KV counters. Free tier: 5 questions per user per day. The iOS app receives a clear "you've reached your daily limit" message on a 429 response. Implemented in `rateLimit.js`. Checked only *after* the cache lookup misses (see Section 2) — a fully cached answer returns immediately and never counts against the user's daily quota or costs a KV write.
 
 ### 7.4 Token limits
 Set `max_tokens: 1024` in the Anthropic API call. This is sufficient *because* chart responses carry only metadata (title, labels, a `sourceToolCallId` per dataset, explanation) — the Worker injects the actual data points after Claude responds (see Section 4). Without that split, a single 140-year annual series (~140 `{x, y}` pairs) already exceeds 800 tokens before any labels or explanation, causing Claude's response to truncate mid-JSON — exactly the malformed-response failure mode R2 warns about. Reject user inputs over 500 characters at the Worker before the request reaches Claude.
@@ -306,9 +315,6 @@ Confirmed: the Cloudflare Worker holds the `ANTHROPIC_API_KEY`. The iOS app only
 ### R4 — Cloudflare Worker free tier
 100,000 requests/day, ~10ms CPU time (wall-clock unlimited). A tool-use loop with 2–3 Claude round-trips will take 3–8 seconds wall-clock — well within limits. CPU usage is minimal (mostly network I/O waiting). Cloudflare KV is included in the free tier (1GB storage, 100K reads/day, **1,000 writes/day**) — but the write limit, not the 100K request limit, is the actual daily ceiling. Every request writes to KV at least once (the rate-limit counter increment in `rateLimit.js`), and every cache miss adds a second write (the cache set in `cache.js`). That puts real daily capacity at roughly **500–1,000 total requests across all users** — closer to 500 on a cold cache, closer to 1,000 once it's warm — not the 100K Worker request quota this section might otherwise suggest. That's almost certainly fine for a TestFlight-scale rollout, but it's the constraint to watch if usage grows. If it becomes binding, Cloudflare's dedicated Rate Limiting binding (doesn't consume the KV write quota) or Durable Objects (per-key coordination without it) are the eventual fix.
 
-### R9 — Cache is scoped to single-turn questions only
-The cache key is a hash of the question text alone, which is only safe when there's no conversation history to disambiguate it. Once history is included, two different follow-ups with identical wording — "how much has it risen?" asked about CO2 in one conversation, about sea ice in another — would hash identically and serve the wrong cached answer to one of them. Fix: only read/write the cache when the incoming `messages` array is a single entry (no prior turns); any multi-turn follow-up always goes straight to Claude. This is the simpler and safer of two options — the alternative, folding conversation history into the cache key, effectively kills the hit rate since history is rarely identical across users, and answer caching is the single highest-leverage cost control in this plan (Section 7.2).
-
 ### R5 — TestFlight requires Apple Developer account
 You need a paid Apple Developer account ($99/yr) to upload to TestFlight, even for internal testing. **Activation takes 24–48 hours after signup** — don't wait until Phase 5 to start this, or it becomes a surprise blocker right when you're ready to ship. Start the signup at developer.apple.com during Phase 1 (see Phase 1, step 8); it doesn't block any earlier work.
 
@@ -320,6 +326,14 @@ Non-streaming for v1 (simpler). The iOS app shows a loading indicator until the 
 
 ### R8 — Open-Meteo free tier is non-commercial only
 Open-Meteo's free tier explicitly prohibits commercial use. If ClimateChat ever includes paid features, a subscription, ads, or is sold, a commercial Open-Meteo plan is required (pricing starts at ~€400/yr as of 2024). **Action required before any monetization:** switch to the paid API tier and update the Worker's Open-Meteo base URL.
+
+### R9 — Cache is scoped to single-turn questions only
+The cache key is a hash of the question text alone, which is only safe when there's no conversation history to disambiguate it. Once history is included, two different follow-ups with identical wording — "how much has it risen?" asked about CO2 in one conversation, about sea ice in another — would hash identically and serve the wrong cached answer to one of them. Fix: only read/write the cache when the incoming `messages` array is a single entry (no prior turns); any multi-turn follow-up always goes straight to Claude. This is the simpler and safer of two options — the alternative, folding conversation history into the cache key, effectively kills the hit rate since history is rarely identical across users, and answer caching is the single highest-leverage cost control in this plan (Section 7.2).
+
+### R10 — Permissive CORS + a discoverable Worker URL invites freeloading
+The iOS app doesn't need CORS at all — permissive CORS (Phase 1, step 6) only benefits browsers, meaning anyone who finds the Worker URL can call it from a web page and spend the app's Claude quota. Rate limiting (7.3) caps the damage per IP but doesn't stop it. Two mitigations, cheapest first:
+- **Shared secret header (Phase 6, step 41):** the iOS app sends a fixed header (e.g. `X-App-Secret`) that the Worker checks against a Worker secret before doing anything else. Raises the bar against casual scraping and random discovery, though the secret ships inside the app binary and can be extracted by a determined attacker — not a real access-control boundary, just friction.
+- **Apple App Attest (future, if abuse actually shows up):** cryptographically proves a request came from a genuine instance of the app running on real Apple hardware, not a browser or script. The correct long-term fix, but meaningfully more setup than this app needs at TestFlight scale — revisit only if the shared-secret header proves insufficient.
 
 ---
 
