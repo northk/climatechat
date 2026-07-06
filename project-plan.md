@@ -156,7 +156,7 @@ Claude's own JSON output names *which* dataset to chart; it never re-types the d
 }
 ```
 
-Before returning the response to the iOS app, the Worker (in `claude.ts`) resolves each `sourceToolCallId` against the matching `tool_result` already in the conversation, parses the raw data points out of that tool's output, and replaces `sourceToolCallId` with a `data` array in the outgoing envelope:
+Before returning the response to the iOS app, the Worker (in `claude.ts`) resolves each `sourceToolCallId` against the matching `tool_result` already in the conversation, extracts the already-parsed data points from that tool's structured output (see Phase 2 — tool handlers never return raw CSV, so there's no re-parsing to do here), and replaces `sourceToolCallId` with a `data` array in the outgoing envelope:
 
 ```json
 {
@@ -196,7 +196,9 @@ Swift `Codable` structs will decode the expanded shape directly. `ClimateChartDa
 8. Start the Apple Developer Program signup at developer.apple.com **now**, in parallel with everything else. Activation takes 24–48 hours and doesn't block Phases 1–4, but it must be done well before Phase 5 (see R5) — don't wait until Phase 5 to start it.
 
 ### Phase 2 — Data tools
-9. Implement `noaaGml.ts` — NOAA Global Monitoring Laboratory, greenhouse gases only. Flat CSV files, no API key, no query parameters (fetch the file, parse the CSV):
+Every tool handler below must return structured JSON as its `tool_result` — parsed `{x, y}` data points plus metadata (units, source) — never the raw CSV/response body verbatim. This is what makes the Section 4 chart injection work: `claude.ts` pulls data straight out of the `tool_result` by `sourceToolCallId` without re-parsing it, and Claude itself reads structured JSON far more reliably than raw CSV text.
+
+9. Implement `noaaGml.ts` — NOAA Global Monitoring Laboratory, greenhouse gases only. Flat CSV files, no API key, no query parameters (fetch the file, parse the CSV, return parsed points — not the CSV text):
    - `get_co2_levels(granularity: "monthly" | "annual")` — atmospheric CO2 (ppm)
      - monthly: `https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_gl.csv` (global network) or `co2_mm_mlo.csv` (Mauna Loa only)
      - annual: `https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_annmean_gl.csv`
