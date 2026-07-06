@@ -220,6 +220,7 @@ Swift `Codable` structs will decode the expanded shape directly. `ClimateChartDa
 11. Implement `seaIceIndex.ts`:
     - `get_arctic_sea_ice(month: 1-12)` — monthly Arctic sea ice extent (million km²)
       - `https://noaadata.apps.nsidc.org/NOAA/G02135/north/monthly/data/N_{MM}_extent_v4.0.csv` (MM = zero-padded month)
+      - ⚠️ Same caveat as the two NCEI endpoints above — confirm this URL still resolves and the CSV column layout hasn't changed with a live request before writing the parser. The hardcoded `v4.0` in the path is a versioned file name, not a stable API contract; NSIDC has bumped this version before (v1 → v2 → v3 → v4) and will again
       - cite as **"NSIDC/NOAA Sea Ice Index"**
 12. Implement `openMeteo.ts` — city-level historical weather:
     - `get_city_temperature_history` — annual average temperature for a named city (geocoded via Open-Meteo's geocoding endpoint, then the archive API)
