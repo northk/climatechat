@@ -272,7 +272,7 @@ Every tool handler below must return structured JSON as its `tool_result` — pa
     - "Show me how global temperature has changed since 1950" (NOAA NCEI)
     - "Is Portland getting hotter?" (Open-Meteo city lookup)
     - "How much have oceans warmed?" (NOAA NCEI)
-    - "Write me a haiku about pizza" (off-topic) — expect a `type: "refusal"` response with example questions and no tool calls; ask it twice and confirm both requests reach Claude rather than being served from cache (see Phase 3, step 18)
+    - "Write me a haiku about pizza" (off-topic) — expect a `type: "refusal"` response with example questions and no tool calls; ask it twice and confirm both requests reach Claude rather than being served from cache (see Phase 3, step 18). The response itself won't show whether it was cached, so verify with `wrangler tail` (live Worker logs) — look for two separate Claude API calls rather than one — or a temporary log line in `cache.ts`
     - A request with a missing or wrong `X-App-Secret` — confirm it's rejected (401), not silently allowed through
 38. Run on a real device via Xcode
 39. Upload to TestFlight via Xcode Organizer → App Store Connect
@@ -305,7 +305,7 @@ These go in `prompts.ts` and are non-negotiable:
 Six layers, in order of impact:
 
 ### 7.1 Anthropic hard spend cap (do this first)
-Set a monthly dollar limit in the Anthropic account dashboard before any live traffic. The API simply stops responding if you hit it — your Worker catches the error and returns a friendly "service temporarily unavailable" message to the iOS app. Set it to whatever you're comfortable losing in a worst-case month (e.g. $20–$50).
+Set a monthly dollar limit in the Anthropic account dashboard before any live traffic. The API simply stops responding if you hit it — your Worker catches the error and returns a friendly "service temporarily unavailable" message to the iOS app. Set it to whatever you're comfortable losing in a worst-case month (e.g. $20–$50). Note: `claude-sonnet-5` carries introductory pricing ($2/$10 per MTok input/output) through 2026-08-31; it rises to $3/$15 per MTok after that — a ~50% jump. Revisit the spend cap figure and any per-question cost assumptions around that date rather than assuming today's math holds indefinitely.
 
 ### 7.2 Answer caching via Cloudflare KV
 The single highest-leverage control for this app. Climate data changes slowly — "what is the current CO₂ level?" asked by 500 users today could cost one Anthropic call instead of 500. Cache key = normalized question hash, **single-turn questions only** (see R9 — a question-text hash can't safely represent a follow-up, since the same wording means different things depending on conversation history), and **never for `type: "refusal"` responses** — each unique off-topic question would otherwise waste a KV write on an answer that's cheap to regenerate anyway. TTLs:
@@ -319,10 +319,12 @@ Implemented in `cache.ts`; wired into `index.ts` before the Claude call.
 Track requests per IP address in KV counters. Free tier: 5 questions per user per day. The iOS app receives a clear "you've reached your daily limit" message on a 429 response. Implemented in `rateLimit.ts`. Checked only *after* the cache lookup misses (see Section 2) — a fully cached answer returns immediately and never counts against the user's daily quota or costs a KV write.
 
 ### 7.4 Token limits
-Set `max_tokens: 1024` in the Anthropic API call. This is sufficient *because* chart responses carry only metadata (title, labels, a `sourceToolCallId` per dataset, explanation) — the Worker injects the actual data points after Claude responds (see Section 4). Without that split, a single 140-year annual series (~140 `{x, y}` pairs) already exceeds 800 tokens before any labels or explanation, causing Claude's response to truncate mid-JSON — exactly the malformed-response failure mode R2 warns about. Reject user inputs over 500 characters at the Worker before the request reaches Claude.
+Set `max_tokens: 1024` in the Anthropic API call. This is sufficient *because* chart responses carry only metadata (title, labels, a `sourceToolCallId` per dataset, explanation) — the Worker injects the actual data points after Claude responds (see Section 4). Without that split, a single 140-year annual series (~140 `{x, y}` pairs) already exceeds 800 tokens before any labels or explanation, causing Claude's response to truncate mid-JSON — exactly the malformed-response failure mode R2 warns about. Reject user inputs over 500 characters at the Worker before the request reaches Claude. Note: `claude-sonnet-5` uses a different tokenizer than `claude-sonnet-4-6` — the same text can run roughly 1.0–1.35x the token count — so per-question cost estimates and the 1024 figure above should be sanity-checked against real usage rather than assumptions carried over from an older model.
 
 ### 7.5 Scope enforcement (defense in depth, not a hard backstop)
 Restricting Claude to climate topics (Section 6) is itself a cost control — it keeps ClimateChat from being usable as a free general-purpose Claude frontend, which would burn through the Anthropic spend cap far faster than climate questions ever would, and would do it under the guise of a legitimate-looking app. This is prompt-based, though, not an enforced boundary: a sufficiently motivated user can likely find phrasing that talks Claude past it. The rate limit (7.3) and the hard spend cap (7.1) remain the actual backstops that can't be argued around — scope enforcement sits on top of them as defense in depth, not a replacement for either.
+
+One deliberate trade-off: a refusal still consumes one of the user's 5 daily questions, since only cache hits bypass the rate limiter (7.3) and refusals are never cached (7.2) — every unique off-topic question is an uncached round-trip to Claude. This is by design: without it, spamming distinct off-topic questions would be a free way around the rate limit entirely. The cost is that a confused legitimate user can burn part of their daily quota on refusals before landing on a question ClimateChat will actually answer.
 
 ### 7.6 Future: tiered access via Apple IAP
 If the app grows:
