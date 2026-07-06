@@ -26,6 +26,8 @@ yarn-error.log*
 # Secrets — never commit these
 .env
 .env.*
+Secrets.xcconfig
+!Secrets.xcconfig.example
 *.pem
 *.p8
 *.p12

@@ -96,7 +96,9 @@ climatechat/
 │       │   └── ClimateChartData.swift      # Decoded chart payload from Worker
 │       ├── Services/
 │       │   └── ClimateAPIService.swift     # URLSession wrapper — POST /ask, decode response
-│       └── Config.swift                    # Worker base URL (one place to change)
+│       ├── Config.swift                    # Worker base URL + reads APP_SECRET from Info.plist
+│       ├── Secrets.xcconfig                 # APP_SECRET value — gitignored, never committed (see R10)
+│       └── Secrets.xcconfig.example         # Committed template: key name + placeholder value, no real secret
 │
 ├── worker/                          # Cloudflare Worker (TypeScript)
 │   ├── wrangler.toml
@@ -259,7 +261,7 @@ Swift `Codable` structs will decode the expanded shape directly. `ClimateChartDa
 38. Reject user inputs over 500 characters at the Worker before reaching Claude
 39. Refine the iOS error states built in Phase 4 (`ErrorView.swift`): add a retry affordance and cover remaining edge cases (e.g. request timeout vs. no connection) beyond the four core cases already handled
 40. Cap conversation history at 10 exchanges before sending to Worker
-41. Add a shared-secret header (e.g. `X-App-Secret`, set as a Worker secret and hardcoded in `Config.swift`) checked on every request before CORS/rate-limit/cache logic runs — raises the bar against people finding the Worker URL and calling it from a browser (see R10). Not a hard access-control boundary; Apple App Attest is the stronger fix if abuse becomes a real problem
+41. Add a shared-secret header (e.g. `X-App-Secret`) checked on every request before CORS/rate-limit/cache logic runs — raises the bar against people finding the Worker URL and calling it from a browser (see R10). On the Worker side, set it via `wrangler secret put APP_SECRET`, same as `ANTHROPIC_API_KEY`. On the iOS side, put the value in `Secrets.xcconfig` (gitignored) — not directly in `Config.swift` — exposed to the app via an `Info.plist` entry (`$(APP_SECRET)`) and read at runtime with `Bundle.main.infoDictionary`. This repo is public, so a value hardcoded in committed Swift source would be readable straight off GitHub, defeating even the modest friction it's meant to add; committing it via `Secrets.xcconfig.example` with a placeholder documents the key without exposing the value. Not a hard access-control boundary either way — Apple App Attest is the stronger fix if abuse becomes a real problem
 
 ---
 
@@ -313,8 +315,8 @@ Global-scale data is split across three separate NOAA/NSIDC sources, not one: NO
 ### R2 — JSON envelope reliability
 Getting Claude to return valid JSON on every response — including edge cases and errors — requires careful prompt engineering and a validation layer in the Worker. Plan for iteration. The Worker should catch malformed responses and return a fallback `{"type":"text","answer":"..."}` rather than crashing.
 
-### R3 — iOS app cannot hold the API key
-Confirmed: the Cloudflare Worker holds the `ANTHROPIC_API_KEY`. The iOS app only knows the Worker's URL. Do not store the key in the Xcode project, `Config.swift`, or any file that touches version control.
+### R3 — iOS app cannot hold the Anthropic API key
+Confirmed: the Cloudflare Worker holds the `ANTHROPIC_API_KEY`. The iOS app only knows the Worker's URL. Do not store the Anthropic key in the Xcode project, `Config.swift`, or any file that touches version control, gitignored or not — it should never be compiled into the app binary at all. This is a stricter, higher-stakes rule than the R10 app-secret header: that value is *expected* to live inside the compiled iOS app (it has to, to be sent on every request) and is friction against casual scraping, not real access control. See R10 for how and where that value is stored — the two secrets are not interchangeable and this rule does not apply to it.
 
 ### R4 — Cloudflare Worker free tier
 100,000 requests/day, ~10ms CPU time (wall-clock unlimited). A tool-use loop with 2–3 Claude round-trips will take 3–8 seconds wall-clock — well within limits. CPU usage is minimal (mostly network I/O waiting). Cloudflare KV is included in the free tier (1GB storage, 100K reads/day, **1,000 writes/day**) — but the write limit, not the 100K request limit, is the actual daily ceiling. Every request writes to KV at least once (the rate-limit counter increment in `rateLimit.ts`), and every cache miss adds a second write (the cache set in `cache.ts`). That puts real daily capacity at roughly **500–1,000 total requests across all users** — closer to 500 on a cold cache, closer to 1,000 once it's warm — not the 100K Worker request quota this section might otherwise suggest. That's almost certainly fine for a TestFlight-scale rollout, but it's the constraint to watch if usage grows. If it becomes binding, Cloudflare's dedicated Rate Limiting binding (doesn't consume the KV write quota) or Durable Objects (per-key coordination without it) are the eventual fix.
@@ -336,7 +338,7 @@ The cache key is a hash of the question text alone, which is only safe when ther
 
 ### R10 — Permissive CORS + a discoverable Worker URL invites freeloading
 The iOS app doesn't need CORS at all — permissive CORS (Phase 1, step 6) only benefits browsers, meaning anyone who finds the Worker URL can call it from a web page and spend the app's Claude quota. Rate limiting (7.3) caps the damage per IP but doesn't stop it. Two mitigations, cheapest first:
-- **Shared secret header (Phase 6, step 41):** the iOS app sends a fixed header (e.g. `X-App-Secret`) that the Worker checks against a Worker secret before doing anything else. Raises the bar against casual scraping and random discovery, though the secret ships inside the app binary and can be extracted by a determined attacker — not a real access-control boundary, just friction.
+- **Shared secret header (Phase 6, step 41):** the iOS app sends a fixed header (e.g. `X-App-Secret`) that the Worker checks against a Worker secret before doing anything else. Stored in a gitignored `Secrets.xcconfig` on the iOS side (see Section 3), never hardcoded directly in committed Swift source — this repo is public, so a value sitting in `Config.swift` would be trivially copyable by anyone browsing GitHub, which would defeat this mitigation before it did anything. Raises the bar against casual scraping and random discovery, though the value still ends up compiled into the shipped app binary and can be extracted by a determined attacker via reverse engineering — not a real access-control boundary, just friction. Distinct from R3: unlike the Anthropic key, this value is *supposed* to live inside the app.
 - **Apple App Attest (future, if abuse actually shows up):** cryptographically proves a request came from a genuine instance of the app running on real Apple hardware, not a browser or script. The correct long-term fix, but meaningfully more setup than this app needs at TestFlight scale — revisit only if the shared-secret header proves insufficient.
 
 ---
