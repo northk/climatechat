@@ -141,14 +141,14 @@ The Worker always returns one of three JSON shapes. The iOS app decodes whicheve
 }
 ```
 
-**Refusal answer** (off-topic questions — see Section 6):
+**Refusal answer** (off-topic questions — see Section 7):
 ```json
 {
   "type": "refusal",
   "answer": "ClimateChat only answers questions about climate change and climate data. Try asking something like: \"How has global CO2 changed since 1960?\""
 }
 ```
-Same shape as the plain text answer — `type` and `answer` only. No tool call was made (see Section 6), so there's nothing to inject and no second construction stage, unlike the chart flow below. `RefusalResponse` is defined in `types.ts` alongside `TextResponse` and the chart types, and included in the `WorkerResponse` union the iOS app decodes against.
+Same shape as the plain text answer — `type` and `answer` only. No tool call was made (see Section 7), so there's nothing to inject and no second construction stage, unlike the chart flow below. `RefusalResponse` is defined in `types.ts` alongside `TextResponse` and the chart types, and included in the `WorkerResponse` union the iOS app decodes against.
 
 The iOS app renders this distinctly from a normal text answer (see Phase 4) and shows 2–3 tappable example climate questions below the refusal message — a small fixed set baked into the iOS view (e.g. "What's the current CO2 level?", "Is Arctic sea ice shrinking?", "How much have oceans warmed?"), not parsed out of Claude's `answer` text. Tapping one submits that question through the same send path as manually typed input, giving a fast way back into a climate question after a refusal.
 
@@ -197,7 +197,24 @@ Swift `Codable` structs will decode the expanded shape directly. `ClimateChartDa
 
 ---
 
-## 5. Sequence of Build Steps
+## 5. UI Design Spec
+
+⏳ **NOT YET WRITTEN — Phase 4 must not begin until this section is complete.** Do not invent UI design details not specified here; if this section is still a placeholder when Phase 4 is reached, stop and ask.
+
+**What's already decided — standard iOS chat conventions:** user messages right-aligned in accent-color bubbles, assistant messages left-aligned in secondary-background bubbles, input bar pinned to bottom with send button, auto-scroll on new message. Follow Apple HIG. Dark mode and Dynamic Type support are non-negotiable and must be built in from the first view, not retrofitted.
+
+**What the completed spec will contain (all TBD):**
+- (a) Empty state / first launch — TBD, including tappable example questions
+- (b) Chart card treatment — TBD (title, plot, source attribution, insets)
+- (c) Refusal and error state visual treatment — TBD
+- (d) Semantic color palette — TBD (semantic names only, e.g. `accent` / `secondaryBackground` — no hex values, so dark mode works)
+- (e) App icon and identity — TBD
+
+**Workflow:** These TBD subsections get filled in from a design iteration done in Claude Design. Its web-based output is visual direction to spec from, not code to port — Phase 4 implements the finished spec idiomatically in SwiftUI, not by porting web markup. The design iteration has no dependency on Phases 1–3 (Worker work) and can run in parallel with them; timebox it to 1–2 evenings.
+
+---
+
+## 6. Sequence of Build Steps
 
 **Testing philosophy:** Tests here map to specific documented risks, not a coverage percentage. R2 (JSON envelope reliability) is covered by the chart-injection and Codable-decoding tests; R9 (cache correctness) by the cache tests; R10 (client verification) by the `verifyClient` tests. The fixture-based parser tests in Phase 2 exist because the NCEI and NSIDC endpoints are explicitly flagged as unstable there — a small, sharp set of tests aimed at real failure modes, not exhaustive boilerplate or a coverage target.
 
@@ -255,7 +272,7 @@ Every tool handler is also paired with fixture-based parser tests, written once 
     - `curl -o worker/test/fixtures/open_meteo_city.json <a real Open-Meteo geocoding + archive response for one test city>`
 
 ### Phase 3 — Claude tool-use loop, rate limiting, and caching
-15. Write `prompts.ts` — system prompt with anti-hallucination rules (see Section 6)
+15. Write `prompts.ts` — system prompt with anti-hallucination rules (see Section 7)
 16. Write `claude.ts` — agentic loop: send → check for tool calls → execute → repeat → final response. For `type: "chart"` responses, resolve each dataset's `sourceToolCallId` against the matching `tool_result` already in the conversation and inject the real data points before returning the envelope (see Section 4) — Claude never generates the data array itself
 17. Write chart-injection tests for `claude.ts` (Vitest): given a mocked Claude chart response containing a `sourceToolCallId` and a mocked structured `tool_result`, assert the Worker emits the correctly expanded `ChartResponse` with real `{x, y}` data points; include a case where the `sourceToolCallId` doesn't match any `tool_result` in the conversation — this should produce the R2 fallback text envelope, not a crash
 18. Implement `rateLimit.ts` — KV counter keyed by IP, limit 5 requests/day; return 429 with a friendly JSON error if exceeded. Build the KV key from the current UTC date (e.g. `rl:{ip}:{YYYY-MM-DD}`) rather than an `expirationTtl`-based rolling window — "reset" then just means "a new day means a new key," which is trivially testable by injecting a date rather than simulating 24 hours of elapsed time. This is a launch prerequisite, not later polish — the Worker cannot go live without it, since `rateLimit.ts` and the KV binding already exist in the Phase 1 setup and the architecture diagram treats it as step 3 of every request that isn't served from cache
@@ -268,6 +285,8 @@ Every tool handler is also paired with fixture-based parser tests, written once 
 25. Smoke test end-to-end with `curl` — including one request with a missing/incorrect `X-App-Secret` to confirm it's rejected
 
 ### Phase 4 — iOS app
+**Entry gate:** the UI Design Spec (Section 5) must be complete — no TBD items — before any Phase 4 step begins. Same pattern as the Apple Developer account gate for Phase 5 (see R5): a prerequisite resolved ahead of time, not discovered mid-phase.
+
 26. Create Xcode project: iOS, SwiftUI, Swift, iOS 16 minimum deployment target
 27. **Before creating the file**, confirm `.gitignore` already excludes `Secrets.xcconfig` — never create the file first and add the ignore rule after; a stray `git add -A` in the gap between the two is enough to commit a real secret to this public repo (see R11). Then create `Secrets.xcconfig` with an `APP_SECRET` value matching the Worker's secret from Phase 3, plus a committed `Secrets.xcconfig.example` placeholder (see Section 3, R3, R10); wire it into the target's `Info.plist` as `$(APP_SECRET)`. Built in here, not as later hardening, so the very first TestFlight build already sends the header the Worker expects
 28. Build `ClimateAPIService.swift` — async/await URLSession POST, Codable response decoding against the `WorkerResponse` union (`text` / `refusal` / `chart`), attaches the `X-App-Secret` header (read via `Bundle.main.infoDictionary`) on every request
@@ -277,7 +296,7 @@ Every tool handler is also paired with fixture-based parser tests, written once 
 32. Build `InputBar.swift` — text field, send button, disabled state while loading
 33. Add a loading indicator (skeleton or spinner) shown while awaiting the Worker's response — without it, the app freezes silently during the 3–8 second API call, which is unusable. Wire it into `ChatView`/`InputBar`, not deferred to hardening
 34. Build `ClimateChartView.swift` — Swift Charts line and bar chart from decoded payload
-35. Build a refusal view (either a dedicated `RefusalView.swift` or a variant rendered by `MessageBubble.swift`) for `type: "refusal"` responses — visually distinct from a normal text answer (e.g. a muted/secondary bubble style), with 2–3 tappable example-question buttons below the message (see Section 4). Wire each button's tap action to submit that example question through the same send path as manually typed input
+35. Build a refusal view (either a dedicated `RefusalView.swift` or a variant rendered by `MessageBubble.swift`) for `type: "refusal"` responses, implementing the tappable example-question behavior specified in Section 4 (Response Envelope). Visual treatment — bubble style, spacing, button appearance — comes from the UI Design Spec (Section 5c), not invented here. Wire each button's tap action to submit that example question through the same send path as manually typed input
 36. Build `ErrorView.swift` — inline error state shown in the chat thread, covering network failure, Worker 5xx, 429 rate-limit, and malformed-response cases, each with a distinct user-facing message. `ClimateAPIService.swift` surfaces these as a typed `APIError` enum so `ChatView` can switch on it
 37. Build `ContentView.swift` — wires all views together
 38. Set the Worker URL in `Config.swift`
@@ -288,7 +307,7 @@ Every tool handler is also paired with fixture-based parser tests, written once 
 41. Write `scripts/smoke-test.sh` — a curl-based script against the deployed Worker's live URL. Reads the app secret from an environment variable (`APP_SECRET=xxx ./scripts/smoke-test.sh`) and fails loudly with a usage message if it's unset — never hardcode the secret in the script itself. This script is committed to a public repo; a hardcoded secret would leak on the very first push, which is arguably a more likely leak path than the `Secrets.xcconfig` scenario R11 already covers, since it's easy to assume a "test script" is low-stakes. Covers, in this order:
     - One question per data source — "What is the current atmospheric CO2 level?" (NOAA GML), "Show me how global temperature has changed since 1950" (NOAA NCEI), "Is Portland getting hotter?" (Open-Meteo city lookup), "How much have oceans warmed?" (NOAA NCEI) — expect 200 with a valid envelope for each
     - The off-topic refusal case ("Write me a haiku about pizza") asked twice — expect 200 with `type: "refusal"` on the first ask
-    - **The second pizza ask is expected to return 429, not 200.** These six requests (four data-source questions + two pizza asks) are all uncached Claude calls, and the daily rate limit (7.3) is 5 — the sixth one trips it by construction. Treat this as a deliberate assertion that 7.3 fires at the correct boundary, not a bug to work around: reordering or adding a bypass header would be more machinery for no real benefit. It also doubles as an indirect check that the first refusal wasn't cached (see step 21) — a caching bug would surface here as an unexpected 200 (a cache hit bypasses the rate limiter entirely), not a 429
+    - **The second pizza ask is expected to return 429, not 200.** These six requests (four data-source questions + two pizza asks) are all uncached Claude calls, and the daily rate limit (8.3) is 5 — the sixth one trips it by construction. Treat this as a deliberate assertion that 8.3 fires at the correct boundary, not a bug to work around: reordering or adding a bypass header would be more machinery for no real benefit. It also doubles as an indirect check that the first refusal wasn't cached (see step 21) — a caching bug would surface here as an unexpected 200 (a cache hit bypasses the rate limiter entirely), not a 429
     - A request with a missing or wrong `X-App-Secret` — expect 401. This one doesn't consume rate-limit quota, since `verifyClient` runs before the rate limiter (see step 24)
 
     Running this script consumes the full daily quota for whatever IP runs it — that's inherent to using the limit itself as the test, not a side effect to avoid. Run it deliberately (e.g., right after a deploy), and expect manual testing from the same IP/network to be rate-limited until the next day's window resets
@@ -305,7 +324,7 @@ Every tool handler is also paired with fixture-based parser tests, written once 
 
 ---
 
-## 6. Anti-Hallucination System Prompt Rules
+## 7. Anti-Hallucination System Prompt Rules
 
 These go in `prompts.ts` and are non-negotiable:
 
@@ -320,14 +339,14 @@ These go in `prompts.ts` and are non-negotiable:
 
 ---
 
-## 7. Cost Controls
+## 8. Cost Controls
 
 Six layers, in order of impact:
 
-### 7.1 Anthropic hard spend cap (do this first)
+### 8.1 Anthropic hard spend cap (do this first)
 Set a monthly dollar limit in the Anthropic account dashboard before any live traffic. The API simply stops responding if you hit it — your Worker catches the error and returns a friendly "service temporarily unavailable" message to the iOS app. Set it to whatever you're comfortable losing in a worst-case month (e.g. $20–$50). Note: `claude-sonnet-5` carries introductory pricing ($2/$10 per MTok input/output) through 2026-08-31; it rises to $3/$15 per MTok after that — a ~50% jump. Revisit the spend cap figure and any per-question cost assumptions around that date rather than assuming today's math holds indefinitely.
 
-### 7.2 Answer caching via Cloudflare KV
+### 8.2 Answer caching via Cloudflare KV
 The single highest-leverage control for this app. Climate data changes slowly — "what is the current CO₂ level?" asked by 500 users today could cost one Anthropic call instead of 500. Cache key = normalized question hash, **single-turn questions only** (see R9 — a question-text hash can't safely represent a follow-up, since the same wording means different things depending on conversation history), and **never for `type: "refusal"` responses** — each unique off-topic question would otherwise waste a KV write on an answer that's cheap to regenerate anyway. TTLs:
 - **1 hour** — current-state questions (CO₂ today, current sea ice extent)
 - **24 hours** — long-term trend questions ("has temperature risen since 1900?" — the answer is the same every day)
@@ -335,18 +354,18 @@ The single highest-leverage control for this app. Climate data changes slowly �
 
 Implemented in `cache.ts`; wired into `index.ts` before the Claude call.
 
-### 7.3 Per-user rate limiting via Cloudflare KV
+### 8.3 Per-user rate limiting via Cloudflare KV
 Track requests per IP address in KV counters. Free tier: 5 questions per user per day. The iOS app receives a clear "you've reached your daily limit" message on a 429 response. Implemented in `rateLimit.ts`. Checked only *after* the cache lookup misses (see Section 2) — a fully cached answer returns immediately and never counts against the user's daily quota or costs a KV write. Exercised end-to-end by `scripts/smoke-test.sh` (Phase 5, step 41), which deliberately trips this limit as one of its assertions rather than working around it — see that step for why.
 
-### 7.4 Token limits
+### 8.4 Token limits
 Set `max_tokens: 1024` in the Anthropic API call. This is sufficient *because* chart responses carry only metadata (title, labels, a `sourceToolCallId` per dataset, explanation) — the Worker injects the actual data points after Claude responds (see Section 4). Without that split, a single 140-year annual series (~140 `{x, y}` pairs) already exceeds 800 tokens before any labels or explanation, causing Claude's response to truncate mid-JSON — exactly the malformed-response failure mode R2 warns about. Reject user inputs over 500 characters at the Worker before the request reaches Claude. Note: `claude-sonnet-5` uses a different tokenizer than `claude-sonnet-4-6` — the same text can run roughly 1.0–1.35x the token count — so per-question cost estimates and the 1024 figure above should be sanity-checked against real usage rather than assumptions carried over from an older model.
 
-### 7.5 Scope enforcement (defense in depth, not a hard backstop)
-Restricting Claude to climate topics (Section 6) is itself a cost control — it keeps ClimateChat from being usable as a free general-purpose Claude frontend, which would burn through the Anthropic spend cap far faster than climate questions ever would, and would do it under the guise of a legitimate-looking app. This is prompt-based, though, not an enforced boundary: a sufficiently motivated user can likely find phrasing that talks Claude past it. The rate limit (7.3) and the hard spend cap (7.1) remain the actual backstops that can't be argued around — scope enforcement sits on top of them as defense in depth, not a replacement for either.
+### 8.5 Scope enforcement (defense in depth, not a hard backstop)
+Restricting Claude to climate topics (Section 7) is itself a cost control — it keeps ClimateChat from being usable as a free general-purpose Claude frontend, which would burn through the Anthropic spend cap far faster than climate questions ever would, and would do it under the guise of a legitimate-looking app. This is prompt-based, though, not an enforced boundary: a sufficiently motivated user can likely find phrasing that talks Claude past it. The rate limit (8.3) and the hard spend cap (8.1) remain the actual backstops that can't be argued around — scope enforcement sits on top of them as defense in depth, not a replacement for either.
 
-One deliberate trade-off: a refusal still consumes one of the user's 5 daily questions, since only cache hits bypass the rate limiter (7.3) and refusals are never cached (7.2) — every unique off-topic question is an uncached round-trip to Claude. This is by design: without it, spamming distinct off-topic questions would be a free way around the rate limit entirely. The cost is that a confused legitimate user can burn part of their daily quota on refusals before landing on a question ClimateChat will actually answer.
+One deliberate trade-off: a refusal still consumes one of the user's 5 daily questions, since only cache hits bypass the rate limiter (8.3) and refusals are never cached (8.2) — every unique off-topic question is an uncached round-trip to Claude. This is by design: without it, spamming distinct off-topic questions would be a free way around the rate limit entirely. The cost is that a confused legitimate user can burn part of their daily quota on refusals before landing on a question ClimateChat will actually answer.
 
-### 7.6 Future: tiered access via Apple IAP
+### 8.6 Future: tiered access via Apple IAP
 If the app grows:
 - **Free tier:** 5 questions/day
 - **Pro tier** (Apple in-app purchase): unlimited questions
@@ -354,10 +373,10 @@ If the app grows:
 
 ---
 
-## 8. Risks and Decision Points
+## 9. Risks and Decision Points
 
 ### R1 — Four active data-source modules in Phase 2
-Global-scale data is split across three separate NOAA/NSIDC sources, not one: NOAA GML (greenhouse gases only — CO2, CH4, N2O), NOAA NCEI (surface temperature anomaly, ocean heat content), and NSIDC (Arctic sea ice extent). GML's API does not carry temperature, sea ice, or ocean heat data — attributing those to GML would violate the anti-hallucination citation rule in Section 6. Open-Meteo handles city-level historical weather. All four files (`noaaGml.ts`, `noaaNcei.ts`, `seaIceIndex.ts`, `openMeteo.ts`) must be fully implemented in Phase 2 — none is a stub.
+Global-scale data is split across three separate NOAA/NSIDC sources, not one: NOAA GML (greenhouse gases only — CO2, CH4, N2O), NOAA NCEI (surface temperature anomaly, ocean heat content), and NSIDC (Arctic sea ice extent). GML's API does not carry temperature, sea ice, or ocean heat data — attributing those to GML would violate the anti-hallucination citation rule in Section 7. Open-Meteo handles city-level historical weather. All four files (`noaaGml.ts`, `noaaNcei.ts`, `seaIceIndex.ts`, `openMeteo.ts`) must be fully implemented in Phase 2 — none is a stub.
 
 ### R2 — JSON envelope reliability
 Getting Claude to return valid JSON on every response — including edge cases and errors — requires careful prompt engineering and a validation layer in the Worker. Plan for iteration. The Worker should catch malformed responses and return a fallback `{"type":"text","answer":"..."}` rather than crashing.
@@ -381,10 +400,10 @@ Non-streaming for v1 (simpler). The iOS app shows a loading indicator until the 
 Open-Meteo's free tier explicitly prohibits commercial use. If ClimateChat ever includes paid features, a subscription, ads, or is sold, a commercial Open-Meteo plan is required (pricing starts at ~€400/yr as of 2024). **Action required before any monetization:** switch to the paid API tier and update the Worker's Open-Meteo base URL.
 
 ### R9 — Cache is scoped to single-turn questions only
-The cache key is a hash of the question text alone, which is only safe when there's no conversation history to disambiguate it. Once history is included, two different follow-ups with identical wording — "how much has it risen?" asked about CO2 in one conversation, about sea ice in another — would hash identically and serve the wrong cached answer to one of them. Fix: only read/write the cache when the incoming `messages` array is a single entry (no prior turns); any multi-turn follow-up always goes straight to Claude. This is the simpler and safer of two options — the alternative, folding conversation history into the cache key, effectively kills the hit rate since history is rarely identical across users, and answer caching is the single highest-leverage cost control in this plan (Section 7.2).
+The cache key is a hash of the question text alone, which is only safe when there's no conversation history to disambiguate it. Once history is included, two different follow-ups with identical wording — "how much has it risen?" asked about CO2 in one conversation, about sea ice in another — would hash identically and serve the wrong cached answer to one of them. Fix: only read/write the cache when the incoming `messages` array is a single entry (no prior turns); any multi-turn follow-up always goes straight to Claude. This is the simpler and safer of two options — the alternative, folding conversation history into the cache key, effectively kills the hit rate since history is rarely identical across users, and answer caching is the single highest-leverage cost control in this plan (Section 8.2).
 
 ### R10 — A discoverable Worker URL invites freeloading
-Anyone who finds the Worker URL could try to call it directly and spend the app's Claude quota — from a browser page, a script, or a tool like Postman. Rate limiting (7.3) caps the damage per IP but doesn't stop it. Two layers address this, cheapest first:
+Anyone who finds the Worker URL could try to call it directly and spend the app's Claude quota — from a browser page, a script, or a tool like Postman. Rate limiting (8.3) caps the damage per IP but doesn't stop it. Two layers address this, cheapest first:
 - **No CORS headers (Phase 1, step 6):** the Worker never sets `Access-Control-Allow-Origin`. This is a deliberate choice, not a "tighten later" placeholder — the iOS app is a native URLSession client, not a browser, so CORS (a browser-only mechanism) never applied to it in the first place. Omitting CORS entirely means a naive browser-JS abuse attempt (someone pasting a `fetch()` call into a page or console) fails at the CORS preflight stage, before the request ever reaches the Worker. It does nothing against non-browser clients (curl, scripts, Postman) — that's what the next layer is for.
 - **Shared secret header (Phase 3, step 22 — Worker; Phase 4, step 27 — iOS):** the iOS app sends a fixed header (e.g. `X-App-Secret`) that the Worker's `verifyClient(request)` checks before doing anything else. Built in from the start rather than added as later hardening — adding the check only after the Phase 5 TestFlight upload would mean the Worker starts rejecting every already-installed build the moment the check ships, since those builds never sent the header. Stored in a gitignored `Secrets.xcconfig` on the iOS side (see Section 3), never hardcoded directly in committed Swift source — this repo is public, so a value sitting in `Config.swift` would be trivially copyable by anyone browsing GitHub, which would defeat this mitigation before it did anything. Raises the bar against casual scraping and random discovery, though the value still ends up compiled into the shipped app binary and can be extracted by a determined attacker via reverse engineering — not a real access-control boundary, just friction. Distinct from R3: unlike the Anthropic key, this value is *supposed* to live inside the app. Covers what the CORS omission above can't: any client, browser or not, that lacks the app secret.
 - **Apple App Attest (future, if abuse actually shows up):** cryptographically proves a request came from a genuine instance of the app running on real Apple hardware, not a browser or script. The correct long-term fix, but meaningfully more setup than this app needs at TestFlight scale — revisit only if the shared-secret header proves insufficient. `verifyClient(request)` is kept as its own function specifically so this swap is a one-function change, not a refactor.
@@ -394,7 +413,7 @@ Bots scan public GitHub for exposed secrets continuously — typically within mi
 
 ---
 
-## 9. Decisions
+## 10. Decisions
 
 1. **Data sources:** NOAA GML (greenhouse gases), NOAA NCEI (surface temperature, ocean heat content), NSIDC (Arctic sea ice), and Open-Meteo (city-level data) — all four active in Phase 2. global-warming.org dropped — no ToS, no SLA, no contact path.
 2. **Apple Developer account:** Sign up at developer.apple.com during **Phase 1**, not Phase 5 (see Phase 1, step 8). Activation takes 24–48 hours and doesn't block Phases 1–4, but starting late turns it into a surprise delay right before the TestFlight upload.
