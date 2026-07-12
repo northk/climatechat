@@ -23,6 +23,8 @@
 | **Xcode version** | Xcode 26.3 | Installed version; targets iOS 16+ deployment |
 | **Worker tests** | Vitest + `@cloudflare/vitest-pool-workers` | Runs tests inside the actual Workers runtime with local KV simulation, so rate limiting and caching are tested realistically rather than against mocks |
 | **iOS tests** | XCTest unit target | Runs headless via Xcode (Cmd+U) or `xcodebuild test -scheme ClimateChat -destination 'platform=iOS Simulator,name=iPhone 16'` from the terminal, so tests are runnable from Claude Code without the Xcode GUI |
+| **Worker lint/format** | TypeScript `"strict": true` + ESLint (typescript-eslint recommended config) + Prettier | Strict mode makes the `types.ts` envelope-type split (Section 4) load-bearing; ESLint's `no-floating-promises` catches forgotten `await`s on KV writes and fetches — the most likely silent bug in this async-heavy Worker; Prettier ends formatting drift between coding sessions |
+| **iOS lint** | SwiftLint, default ruleset, run as an Xcode build phase | Warnings surface in build output, and it's CLI-runnable (`swiftlint lint`) so it works headless from the terminal |
 
 **What's intentionally excluded:**
 - No CloudKit/iCloud sync — conversation history lives in memory for the session only (v1)
@@ -30,6 +32,7 @@
 - No third-party networking library (URLSession is sufficient for a simple JSON API client)
 - No third-party charting library — Swift Charts handles everything needed
 - No XCUITest UI automation in v1 (slow, brittle, lowest value for a chat UI; revisit post-launch if warranted)
+- No pre-commit hook frameworks (Husky/lint-staged) and no custom lint rule configs — those coordinate humans on shared codebases; a solo project with stock configs run at build/deploy time doesn't need the machinery
 
 ---
 
@@ -218,10 +221,10 @@ Swift `Codable` structs will decode the expanded shape directly. `ClimateChartDa
 
 **Testing philosophy:** Tests here map to specific documented risks, not a coverage percentage. R2 (JSON envelope reliability) is covered by the chart-injection and Codable-decoding tests; R9 (cache correctness) by the cache tests; R10 (client verification) by the `verifyClient` tests. The fixture-based parser tests in Phase 2 exist because the NCEI and NSIDC endpoints are explicitly flagged as unstable there — a small, sharp set of tests aimed at real failure modes, not exhaustive boilerplate or a coverage target.
 
-Worker tests run via `npx vitest run` (or `npx vitest` in watch mode during development); iOS tests run via `xcodebuild test -scheme ClimateChat -destination 'platform=iOS Simulator,name=iPhone 16'` (or Cmd+U in Xcode). Both suites must pass before the Phase 5 `wrangler deploy` step — a regression caught after deploy is a live regression.
+Worker tests run via `npx vitest run` (or `npx vitest` in watch mode during development); iOS tests run via `xcodebuild test -scheme ClimateChat -destination 'platform=iOS Simulator,name=iPhone 16'` (or Cmd+U in Xcode). Both suites must pass before the Phase 5 `wrangler deploy` step — a regression caught after deploy is a live regression. Lint has the same teeth: `npm run lint` (Worker) and `swiftlint lint` (iOS) must also pass before that same deploy step.
 
 ### Phase 1 — Worker skeleton
-1. `npm create cloudflare@latest worker` in `worker/`, selecting the **TypeScript** "Hello World" Worker template when prompted; confirm Wrangler works. Add `vitest` and `@cloudflare/vitest-pool-workers` as dev dependencies and configure `vitest.config.ts` per the pool-workers setup (see Section 1) — tests then run inside the actual Workers runtime, with local KV simulation, rather than against mocks. Write one trivial passing test (e.g. `expect(1 + 1).toBe(2)`) and confirm it runs via `npx vitest run` — this only proves the harness itself works; real tests get added alongside each subsequent implementation step
+1. `npm create cloudflare@latest worker` in `worker/`, selecting the **TypeScript** "Hello World" Worker template when prompted; confirm Wrangler works. Add `vitest` and `@cloudflare/vitest-pool-workers` as dev dependencies and configure `vitest.config.ts` per the pool-workers setup (see Section 1) — tests then run inside the actual Workers runtime, with local KV simulation, rather than against mocks. Write one trivial passing test (e.g. `expect(1 + 1).toBe(2)`) and confirm it runs via `npx vitest run` — this only proves the harness itself works; real tests get added alongside each subsequent implementation step. Also enable `"strict": true` in `tsconfig.json`; add ESLint (typescript-eslint recommended config — confirm `no-floating-promises` is active) and Prettier as dev dependencies with stock configs, no custom rules; add `"lint"` and `"format"` scripts to `package.json`; confirm `npm run lint` passes on the scaffold before moving on
 2. Add `@anthropic-ai/sdk` and `@cloudflare/workers-types` as dependencies (the SDK ships its own types; `@cloudflare/workers-types` covers the Workers runtime globals like `Fetcher` and `KVNamespace`). Confirm the template's `tsconfig.json` includes it. Create `src/types.ts` defining the response envelope types referenced in Section 4 (`TextResponse`, `RefusalResponse`, `ChartResponse`, `ClaudeChartResponse`, and the `WorkerResponse` union)
 3. Set `ANTHROPIC_API_KEY` as a Worker secret via `wrangler secret put`
 4. Create a KV namespace via Cloudflare dashboard, bind it in `wrangler.toml` as `CLIMATE_KV`
@@ -287,7 +290,7 @@ Every tool handler is also paired with fixture-based parser tests, written once 
 ### Phase 4 — iOS app
 **Entry gate:** the UI Design Spec (Section 5) must be complete — no TBD items — before any Phase 4 step begins. Same pattern as the Apple Developer account gate for Phase 5 (see R5): a prerequisite resolved ahead of time, not discovered mid-phase.
 
-26. Create Xcode project: iOS, SwiftUI, Swift, iOS 16 minimum deployment target
+26. Create Xcode project: iOS, SwiftUI, Swift, iOS 16 minimum deployment target. Add SwiftLint (default ruleset, no custom rules) as a Run Script build phase so lint warnings appear in every build; it must also pass via `swiftlint lint` from the CLI, so it's checkable headless without opening Xcode
 27. **Before creating the file**, confirm `.gitignore` already excludes `Secrets.xcconfig` — never create the file first and add the ignore rule after; a stray `git add -A` in the gap between the two is enough to commit a real secret to this public repo (see R11). Then create `Secrets.xcconfig` with an `APP_SECRET` value matching the Worker's secret from Phase 3, plus a committed `Secrets.xcconfig.example` placeholder (see Section 3, R3, R10); wire it into the target's `Info.plist` as `$(APP_SECRET)`. Built in here, not as later hardening, so the very first TestFlight build already sends the header the Worker expects
 28. Build `ClimateAPIService.swift` — async/await URLSession POST, Codable response decoding against the `WorkerResponse` union (`text` / `refusal` / `chart`), attaches the `X-App-Secret` header (read via `Bundle.main.infoDictionary`) on every request
 29. Build `Message.swift` and `ClimateChartData.swift` models
