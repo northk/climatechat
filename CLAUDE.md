@@ -11,6 +11,7 @@ Full architecture, build sequence, and risk register: see project-plan.md.
 - Never cite NCEI or NSIDC data as "NOAA GML" — different sources (plan Section 7)
 - UI work must follow the UI Design Spec (plan Section 5); if it's still TBD, stop and ask
 - Never set temperature/top_p/top_k in Anthropic API calls — Sonnet 5 returns 400 on non-default values; steer output through the system prompt
+- The anti-hallucination system prompt rules in project-plan.md Section 7 are non-negotiable and must be implemented verbatim in worker/src/prompts.ts — never paraphrase, soften, "streamline", or partially implement them during any refactor. If a change to prompts.ts seems needed, update Section 7 of the plan first, then mirror it in code.
 
 ## Commands
 - Worker tests: cd worker && npx vitest run
