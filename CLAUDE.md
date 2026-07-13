@@ -10,6 +10,7 @@ Full architecture, build sequence, and risk register: see project-plan.md.
 - Tool handlers return structured JSON, never raw CSV (plan Phase 2 preamble)
 - Never cite NCEI or NSIDC data as "NOAA GML" — different sources (plan Section 7)
 - UI work must follow the UI Design Spec (plan Section 5); if it's still TBD, stop and ask
+- Never set temperature/top_p/top_k in Anthropic API calls — Sonnet 5 returns 400 on non-default values; steer output through the system prompt
 
 ## Commands
 - Worker tests: cd worker && npx vitest run
@@ -22,4 +23,5 @@ Full architecture, build sequence, and risk register: see project-plan.md.
 ## Conventions
 - TypeScript strict mode; no floating promises
 - Model string: claude-sonnet-5
+- max_tokens: 1536 (sized for Sonnet 5's tokenizer, ~30% more tokens per text than 4.6 — don't reuse old-model token intuitions)
 - Response envelope types live in worker/src/types.ts — iOS Codable structs must match
