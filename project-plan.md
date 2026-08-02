@@ -109,7 +109,7 @@ climatechat/
 │       └── Secrets.xcconfig.example         # Committed template: key name + placeholder value, no real secret
 │
 ├── worker/                          # Cloudflare Worker (TypeScript)
-│   ├── wrangler.toml
+│   ├── wrangler.jsonc               # Wrangler config — JSON is Cloudflare's current recommended format (TOML is legacy)
 │   ├── package.json
 │   ├── tsconfig.json                 # Targets the Workers runtime via @cloudflare/workers-types
 │   └── src/
@@ -227,7 +227,7 @@ Worker tests run via `npx vitest run` (or `npx vitest` in watch mode during deve
 1. `npm create cloudflare@latest worker` in `worker/`, selecting the **TypeScript** "Hello World" Worker template when prompted; confirm Wrangler works. Add `vitest` and `@cloudflare/vitest-pool-workers` as dev dependencies and configure `vitest.config.ts` per the pool-workers setup (see Section 1) — tests then run inside the actual Workers runtime, with local KV simulation, rather than against mocks. Write one trivial passing test (e.g. `expect(1 + 1).toBe(2)`) and confirm it runs via `npx vitest run` — this only proves the harness itself works; real tests get added alongside each subsequent implementation step. Also enable `"strict": true` in `tsconfig.json`; add ESLint (typescript-eslint recommended config — confirm `no-floating-promises` is active) and Prettier as dev dependencies with stock configs, no custom rules; add `"lint"` and `"format"` scripts to `package.json`; confirm `npm run lint` passes on the scaffold before moving on
 2. Add `@anthropic-ai/sdk` and `@cloudflare/workers-types` as dependencies (the SDK ships its own types; `@cloudflare/workers-types` covers the Workers runtime globals like `Fetcher` and `KVNamespace`). Confirm the template's `tsconfig.json` includes it. Create `src/types.ts` defining the response envelope types referenced in Section 4 (`TextResponse`, `RefusalResponse`, `ChartResponse`, `ClaudeChartResponse`, and the `WorkerResponse` union)
 3. Set `ANTHROPIC_API_KEY` as a Worker secret via `wrangler secret put`
-4. Create a KV namespace via Cloudflare dashboard, bind it in `wrangler.toml` as `CLIMATE_KV`
+4. Create a KV namespace via Cloudflare dashboard, bind it in `wrangler.jsonc` as `CLIMATE_KV`
 5. Set a monthly hard spend cap in the Anthropic account dashboard (e.g. $20) before any live traffic
 6. Do **not** add CORS headers — the iOS app is a native URLSession client, not a browser, so CORS (a browser-only mechanism) never applied to it. Omitting CORS entirely, rather than setting a permissive `Access-Control-Allow-Origin: *`, is the deliberate choice: it makes a naive browser-JS abuse attempt (e.g. someone pasting a `fetch()` call into a page or console) fail at the CORS preflight stage, before the request even reaches the Worker (see R10)
 7. Stub `POST /ask` that echoes the body — smoke test with `curl`
