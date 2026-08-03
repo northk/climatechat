@@ -8,7 +8,8 @@
 		"start": "wrangler dev",
 		"test": "vitest",
 		"cf-typegen": "wrangler types",
-		"lint": "eslint . && prettier --check .",
+		"typecheck": "tsc -p tsconfig.json && tsc -p test/tsconfig.json",
+		"lint": "npm run typecheck && eslint . && prettier --check .",
 		"format": "prettier --write ."
 	},
 	"devDependencies": {
@@ -20,5 +21,8 @@
 		"typescript-eslint": "^8.65.0",
 		"vitest": "~3.2.0",
 		"wrangler": "^4.118.0"
+	},
+	"dependencies": {
+		"@anthropic-ai/sdk": "^0.115.0"
 	}
 }
