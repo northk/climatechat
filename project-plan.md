@@ -111,7 +111,7 @@ climatechat/
 ├── worker/                          # Cloudflare Worker (TypeScript)
 │   ├── wrangler.jsonc               # Wrangler config — JSON is Cloudflare's current recommended format (TOML is legacy)
 │   ├── package.json
-│   ├── tsconfig.json                 # Targets the Workers runtime via @cloudflare/workers-types
+│   ├── tsconfig.json                 # Targets the Workers runtime via the generated worker-configuration.d.ts (see step 2)
 │   └── src/
 │       ├── index.ts                 # Entry point — no CORS headers (see R10), routes POST /ask
 │       ├── types.ts                  # Shared types: TextResponse, RefusalResponse, ChartResponse, WorkerResponse union (Section 4)
@@ -225,7 +225,7 @@ Worker tests run via `npx vitest run` (or `npx vitest` in watch mode during deve
 
 ### Phase 1 — Worker skeleton
 1. `npm create cloudflare@latest worker` in `worker/`, selecting the **TypeScript** "Hello World" Worker template when prompted; confirm Wrangler works. Add `vitest` and `@cloudflare/vitest-pool-workers` as dev dependencies and configure `vitest.config.ts` per the pool-workers setup (see Section 1) — tests then run inside the actual Workers runtime, with local KV simulation, rather than against mocks. Write one trivial passing test (e.g. `expect(1 + 1).toBe(2)`) and confirm it runs via `npx vitest run` — this only proves the harness itself works; real tests get added alongside each subsequent implementation step. Also enable `"strict": true` in `tsconfig.json`; add ESLint (typescript-eslint recommended config — confirm `no-floating-promises` is active) and Prettier as dev dependencies with stock configs, no custom rules; add `"lint"` and `"format"` scripts to `package.json`; confirm `npm run lint` passes on the scaffold before moving on
-2. Add `@anthropic-ai/sdk` and `@cloudflare/workers-types` as dependencies (the SDK ships its own types; `@cloudflare/workers-types` covers the Workers runtime globals like `Fetcher` and `KVNamespace`). Confirm the template's `tsconfig.json` includes it. Create `src/types.ts` defining the response envelope types referenced in Section 4 (`TextResponse`, `RefusalResponse`, `ChartResponse`, `ClaudeChartResponse`, and the `WorkerResponse` union)
+2. Add `@anthropic-ai/sdk` as a dependency (the SDK ships its own types). Do **not** add `@cloudflare/workers-types` — that package is the legacy route to the Workers runtime types; with wrangler v4 the generated `worker-configuration.d.ts` (from `npm run cf-typegen` / `wrangler types`) fully replaces it, covers the runtime globals like `Fetcher` and `KVNamespace`, and tracks the exact `compatibility_date` in `wrangler.jsonc`; installing both risks duplicate-declaration conflicts. Rerun `npm run cf-typegen` after any `wrangler.jsonc` bindings change. Create `src/types.ts` defining the response envelope types referenced in Section 4 (`TextResponse`, `RefusalResponse`, `ChartResponse`, `ClaudeChartResponse`, and the `WorkerResponse` union)
 3. Set `ANTHROPIC_API_KEY` as a Worker secret via `wrangler secret put`
 4. Create a KV namespace via Cloudflare dashboard, bind it in `wrangler.jsonc` as `CLIMATE_KV`
 5. Set a monthly hard spend cap in the Anthropic account dashboard (e.g. $20) before any live traffic
