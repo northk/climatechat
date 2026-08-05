@@ -2,6 +2,12 @@
 	"name": "climatechat-worker",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-03-10",
+	"kv_namespaces": [
+		{
+			"binding": "CLIMATE_KV",
+			"id": "452fe7c804e94b35a1f0bb5f14caa245",
+		},
+	],
 	"observability": {
 		"enabled": true,
 	},
