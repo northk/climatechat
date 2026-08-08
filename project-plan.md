@@ -255,9 +255,9 @@ Every tool handler is also paired with fixture-based parser tests, written once 
    - `get_surface_temperature(start_year, end_year, scale: "monthly" | "annual")` — global land+ocean temperature anomaly (°C vs. 20th-century average), served via the Climate at a Glance API: `https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean/{month-scale}/{month}/{start}-{end}.json`
      - ⚠️ The exact path/query format isn't exposed in NCEI's static docs — confirm it with a live request against `ncei.noaa.gov/support/access-data-service-api-user-documentation` before writing the parser
      - cite as **"NOAA NCEI (NOAAGlobalTemp)"**
-   - `get_ocean_heat_content(basin: "world" | "pacific" | "atlantic" | "indian", depth: "700m" | "2000m")` — ocean heat content anomaly (10²² J)
-     - `https://www.ncei.noaa.gov/data/oceans/woa/DATA_ANALYSIS/3M_HEAT_CONTENT/DATA/basin/onemonth/ohc_levitus_climdash_monthly.csv` (0-700m) or `ohc2000m_levitus_climdash_monthly.csv` (0-2000m)
-     - ⚠️ Same caveat as the surface-temperature endpoint above — confirm this URL still resolves and the CSV column layout hasn't changed with a live request before writing the parser. NCEI file paths move without notice; this one is no more stable than the Climate at a Glance endpoint just because it looks like a static file
+   - `get_ocean_heat_content(basin: "world" | "pacific" | "atlantic" | "indian", depth: "700m" | "2000m")` — ocean heat content anomaly (10²² J), annual
+     - `https://www.ncei.noaa.gov/data/oceans/woa/DATA_ANALYSIS/3M_HEAT_CONTENT/DATA/basin/yearly/h22-{w|p|a|i}0-{700|2000}m.dat` — whitespace-delimited yearly files, one per basin×depth; first data column (WO/PO/AO/IO) is the basin anomaly, remaining columns are hemispheric splits and standard errors. Record runs 1955–present
+     - (Confirmed live 2026-08-07. The originally planned climdash monthly CSVs — `onemonth/ohc_levitus_climdash_monthly.csv` / `ohc2000m_...` — turned out to be **world-only** with no per-basin variants, and start in 2005; the yearly .dat files are the only path that honors the basin parameter, and their 1955-start record is better for trend questions anyway. Annual resolution is sufficient for OHC.)
      - cite as **"NOAA NCEI"**
 11. Implement `seaIceIndex.ts`:
     - `get_arctic_sea_ice(month: 1-12)` — monthly Arctic sea ice extent (million km²)
@@ -270,7 +270,7 @@ Every tool handler is also paired with fixture-based parser tests, written once 
 14. Curl each upstream endpoint to confirm it responds, saving each response as the fixture the tests above run against (`worker/test/fixtures/`) — the same one-time check this step already called for, now captured to disk instead of thrown away:
     - `curl -o worker/test/fixtures/co2_mm_gl.csv https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_gl.csv` (one representative NOAA GML CSV — CH4/N2O share the same shape, no separate fixture needed)
     - `curl -o worker/test/fixtures/ncei_surface_temp.json <resolved Climate at a Glance URL>` — this curl doubles as the live check step 10 already calls for to pin down the exact path/query format
-    - `curl -o worker/test/fixtures/ncei_ohc.csv https://www.ncei.noaa.gov/data/oceans/woa/DATA_ANALYSIS/3M_HEAT_CONTENT/DATA/basin/onemonth/ohc_levitus_climdash_monthly.csv`
+    - `curl -o worker/test/fixtures/ncei_ohc_700m.dat https://www.ncei.noaa.gov/data/oceans/woa/DATA_ANALYSIS/3M_HEAT_CONTENT/DATA/basin/yearly/h22-w0-700m.dat` (world file; the p0/a0/i0 basin files share the same layout with their own column names, no separate fixtures needed)
     - `curl -o worker/test/fixtures/nsidc_sea_ice.csv https://noaadata.apps.nsidc.org/NOAA/G02135/north/monthly/data/N_01_extent_v4.0.csv`
     - `curl -o worker/test/fixtures/open_meteo_geocode.json <a real Open-Meteo geocoding API response for one test city>` and `curl -o worker/test/fixtures/open_meteo_archive.json <a real Open-Meteo archive API response for that same city>` — two separate fixtures, since `openMeteo.ts` parses two different API shapes (geocoding, then archive) and each stage needs its own fixture, not one file covering both
 

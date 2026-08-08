@@ -1,1 +1,3 @@
 worker-configuration.d.ts
+# Captured upstream fixtures — keep byte-for-byte as downloaded
+test/fixtures/
