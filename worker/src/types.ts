@@ -34,6 +34,22 @@ export interface ChartPoint {
 	y: number;
 }
 
+/**
+ * The structured JSON every tool handler returns as its tool_result
+ * (plan Phase 2 preamble — never raw CSV). Phase 3's chart injection
+ * reads `points` straight out of this by `sourceToolCallId`, and the
+ * `source` string is what Claude must cite verbatim (Section 7).
+ */
+export interface ToolDataResult {
+	/** Exact citation name, e.g. "NOAA GML" — never attribute across sources */
+	source: string;
+	/** Human-readable series description, e.g. "Atmospheric CO2 (monthly mean)" */
+	description: string;
+	/** Measurement unit, e.g. "ppm" */
+	unit: string;
+	points: ChartPoint[];
+}
+
 /** Claude-facing dataset: names the source tool call, never the data. */
 export interface ClaudeChartDataset {
 	label: string;
