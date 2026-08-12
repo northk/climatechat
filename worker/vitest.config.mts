@@ -5,6 +5,13 @@ export default defineWorkersConfig({
 		poolOptions: {
 			workers: {
 				wrangler: { configPath: './wrangler.jsonc' },
+				miniflare: {
+					// Test-only secret values; production uses `wrangler secret put`
+					bindings: {
+						APP_SECRET: 'test-app-secret',
+						ANTHROPIC_API_KEY: 'test-anthropic-key-never-used',
+					},
+				},
 			},
 		},
 	},
