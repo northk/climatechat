@@ -6,7 +6,7 @@
  * /ask handler's job (step 24); this module only decides.
  */
 
-/** Free tier: 5 questions per IP per day (Section 8.3). */
+/** Free-tier questions per IP per day (Section 8.3). */
 export const DAILY_LIMIT = 5;
 
 /**

@@ -5,7 +5,7 @@
  *   verifyClient → parse/validate body → cache read (single-turn only)
  *   → rate limit → Claude loop → cache write → JSON envelope.
  * Cache is checked BEFORE the rate limiter so a cached answer never
- * costs one of the user's 5 daily questions (Section 8.2/8.3).
+ * costs one of the user's daily questions (Section 8.2/8.3).
  *
  * Deliberately NO CORS headers, ever (plan step 6 / R10): the iOS app
  * is a native URLSession client, so CORS never applies to it — omitting
@@ -17,7 +17,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
 import { askClaude, logError } from './claude';
 import { cacheGet, cacheSet } from './cache';
-import { checkAndIncrement } from './rateLimit';
+import { checkAndIncrement, DAILY_LIMIT } from './rateLimit';
 import type { WorkerResponse } from './types';
 
 /**
@@ -83,7 +83,10 @@ export async function handleAsk(request: Request, env: Env, ask: AskFn): Promise
 	const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
 	const decision = await checkAndIncrement(env.CLIMATE_KV, ip);
 	if (!decision.allowed) {
-		return Response.json({ error: "You've reached your daily limit of 5 questions. Your quota resets at midnight UTC." }, { status: 429 });
+		return Response.json(
+			{ error: `You've reached your daily limit of ${DAILY_LIMIT} questions. Your quota resets at midnight UTC.` },
+			{ status: 429 },
+		);
 	}
 
 	// 5. Claude loop → 6. cache write (single-turn only; never refusals)
