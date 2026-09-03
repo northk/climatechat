@@ -12,7 +12,7 @@ import { parseGmlCsv, gmlToolDefinitions } from '../src/tools/noaaGml';
 import monthlyFixture from './fixtures/co2_mm_gl.csv?raw';
 import annualFixture from './fixtures/co2_annmean_gl.csv?raw';
 
-describe('parseGmlCsv — monthly shape (co2_mm_gl.csv fixture)', () => {
+describe('parseGmlCsv - monthly shape (co2_mm_gl.csv fixture)', () => {
 	const points = parseGmlCsv(monthlyFixture, 'monthly');
 
 	it('parses the full series with fractional-year x values', () => {
@@ -30,7 +30,7 @@ describe('parseGmlCsv — monthly shape (co2_mm_gl.csv fixture)', () => {
 	});
 });
 
-describe('parseGmlCsv — annual shape (co2_annmean_gl.csv fixture)', () => {
+describe('parseGmlCsv - annual shape (co2_annmean_gl.csv fixture)', () => {
 	const points = parseGmlCsv(annualFixture, 'annual');
 
 	it('parses integer-year points', () => {
@@ -40,7 +40,7 @@ describe('parseGmlCsv — annual shape (co2_annmean_gl.csv fixture)', () => {
 	});
 });
 
-describe('parseGmlCsv — resilience', () => {
+describe('parseGmlCsv - resilience', () => {
 	it('locates columns by header name, not position', () => {
 		const reordered = ['average,year,month,decimal', '340.5,1980,1,1980.042'].join('\n');
 		expect(parseGmlCsv(reordered, 'monthly')).toEqual([{ x: 1980.042, y: 340.5 }]);

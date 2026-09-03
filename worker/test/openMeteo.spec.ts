@@ -11,7 +11,7 @@ import archiveRaw from './fixtures/open_meteo_archive.json?raw';
 
 const archiveFixture: unknown = JSON.parse(archiveRaw);
 
-describe('parseGeocodeJson — Portland fixture', () => {
+describe('parseGeocodeJson - Portland fixture', () => {
 	it('extracts the resolved city, coordinates, and country', () => {
 		const city = parseGeocodeJson(JSON.parse(geocodeRaw), 'Portland');
 		expect(city.name).toBe('Portland');
@@ -31,7 +31,7 @@ describe('parseGeocodeJson — Portland fixture', () => {
 	});
 });
 
-describe('aggregateArchive — Portland 2022-2023 fixture', () => {
+describe('aggregateArchive - Portland 2022-2023 fixture', () => {
 	it('annual: aggregates 730 daily values into two annual means', () => {
 		const points = aggregateArchive(archiveFixture, 'annual');
 		expect(points).toHaveLength(2);
@@ -67,7 +67,7 @@ describe('aggregateArchive — Portland 2022-2023 fixture', () => {
 	});
 });
 
-describe('aggregateArchive — resilience', () => {
+describe('aggregateArchive - resilience', () => {
 	function syntheticDays(dates: string[], temp: number) {
 		return { time: dates, temps: dates.map(() => temp) };
 	}
@@ -126,7 +126,7 @@ describe('aggregateArchive — resilience', () => {
 	});
 });
 
-describe('runCityTemperatureHistory — input validation (throws before any fetch)', () => {
+describe('runCityTemperatureHistory - input validation (throws before any fetch)', () => {
 	it('rejects an invalid granularity', async () => {
 		await expect(runCityTemperatureHistory({ city: 'Portland', granularity: 'daily' })).rejects.toThrow(/granularity must be/);
 	});

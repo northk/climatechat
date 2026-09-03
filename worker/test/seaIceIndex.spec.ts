@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { parseSeaIceCsv, seaIceToolDefinitions } from '../src/tools/seaIceIndex';
 import seaIceFixture from './fixtures/nsidc_sea_ice.csv?raw';
 
-describe('parseSeaIceCsv — January fixture (1979-2026)', () => {
+describe('parseSeaIceCsv - January fixture (1979-2026)', () => {
 	const points = parseSeaIceCsv(seaIceFixture);
 
 	it('parses one point per year with whitespace-padded cells handled', () => {
@@ -27,7 +27,7 @@ describe('parseSeaIceCsv — January fixture (1979-2026)', () => {
 	});
 });
 
-describe('parseSeaIceCsv — resilience', () => {
+describe('parseSeaIceCsv - resilience', () => {
 	it('skips -9999 missing-value sentinel rows', () => {
 		const withSentinel = [
 			'year, mo,source_dataset, region, extent, area',

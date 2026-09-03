@@ -9,7 +9,7 @@ import annualTempRaw from './fixtures/ncei_surface_temp_annual.json?raw';
 import monthlyTempRaw from './fixtures/ncei_surface_temp_monthly.json?raw';
 import ohcFixture from './fixtures/ncei_ohc_700m.dat?raw';
 
-describe('parseCagJson — annual fixture (1880-2025)', () => {
+describe('parseCagJson - annual fixture (1880-2025)', () => {
 	const points = parseCagJson(JSON.parse(annualTempRaw));
 
 	it('parses one integer-year point per year, ascending', () => {
@@ -28,7 +28,7 @@ describe('parseCagJson — annual fixture (1880-2025)', () => {
 	});
 });
 
-describe('parseCagJson — monthly fixture', () => {
+describe('parseCagJson - monthly fixture', () => {
 	const points = parseCagJson(JSON.parse(monthlyTempRaw));
 
 	it('parses YYYYMM keys into month-centered fractional years', () => {
@@ -39,7 +39,7 @@ describe('parseCagJson — monthly fixture', () => {
 	});
 });
 
-describe('parseCagJson — resilience', () => {
+describe('parseCagJson - resilience', () => {
 	it('throws when the "data" object is missing', () => {
 		expect(() => parseCagJson({ description: {} })).toThrow(/no "data"/);
 		expect(() => parseCagJson(null)).toThrow(/no "data"/);
@@ -58,7 +58,7 @@ describe('parseCagJson — resilience', () => {
 	});
 });
 
-describe('parseOhcDat — world 700m fixture (1955-2025)', () => {
+describe('parseOhcDat - world 700m fixture (1955-2025)', () => {
 	const points = parseOhcDat(ohcFixture, 'WO');
 
 	it('parses integer years from the YYYY.500 midpoints', () => {
@@ -74,7 +74,7 @@ describe('parseOhcDat — world 700m fixture (1955-2025)', () => {
 	});
 });
 
-describe('parseOhcDat — resilience', () => {
+describe('parseOhcDat - resilience', () => {
 	it('selects the requested basin column by name', () => {
 		const pacific = ['YEAR      PO    POse      NP    NPse', '1960.500  -1.877   1.321  -0.984   0.608'].join('\n');
 		expect(parseOhcDat(pacific, 'PO')).toEqual([{ x: 1960, y: -1.877 }]);

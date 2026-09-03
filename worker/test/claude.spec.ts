@@ -62,7 +62,7 @@ const sampleResult: ToolDataResult = {
 	],
 };
 
-describe('askClaude — request shape', () => {
+describe('askClaude - request shape', () => {
 	it('never sets temperature/top_p/top_k, uses the pinned model and max_tokens, and marks two cache breakpoints', async () => {
 		const { create, calls } = scriptedCreator([textResponse('{"type":"text","answer":"ok"}')]);
 		await askClaude(user('What is the current CO2 level?'), create);
@@ -83,7 +83,7 @@ describe('askClaude — request shape', () => {
 	});
 });
 
-describe('askClaude — tool-use loop', () => {
+describe('askClaude - tool-use loop', () => {
 	it('executes a tool call and returns the expanded chart envelope with injected data (step 17 core case)', async () => {
 		// Round 1: Claude calls get_co2_levels. We can't let the real handler
 		// fetch, so the tool call uses an invalid granularity... no — this is
@@ -176,7 +176,7 @@ describe('askClaude — tool-use loop', () => {
 	});
 });
 
-describe('parseEnvelope — malformed output (R2)', () => {
+describe('parseEnvelope - malformed output (R2)', () => {
 	const noResults = new Map<string, ToolDataResult>();
 
 	it('returns prose as a text answer when Claude ignored the JSON rule', () => {

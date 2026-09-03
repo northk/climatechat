@@ -20,7 +20,7 @@ const multiTurn = (question: string): MessageParam[] => [
 	{ role: 'user', content: question },
 ];
 
-describe('cacheableQuestion — the single-turn gate (R9)', () => {
+describe('cacheableQuestion - the single-turn gate (R9)', () => {
 	it('accepts exactly one plain user turn', () => {
 		expect(cacheableQuestion(singleTurn('What is the CO2 level?'))).toBe('What is the CO2 level?');
 	});
