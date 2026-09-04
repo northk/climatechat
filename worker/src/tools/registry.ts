@@ -10,6 +10,7 @@
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ToolDataResult } from '../types';
+import { ToolError } from './errors';
 import { gmlToolDefinitions, gmlToolNames, runGmlTool } from './noaaGml';
 import { nceiToolDefinitions, nceiToolNames, runNceiTool } from './noaaNcei';
 import { seaIceToolDefinitions, seaIceToolNames, runArcticSeaIce } from './seaIceIndex';
@@ -24,14 +25,15 @@ export const allToolDefinitions: Tool[] = [
 ];
 
 /**
- * Execute one tool call. Throws on unknown tool name, invalid input, or
- * upstream failure — the Phase 3 loop catches and returns is_error
- * tool_results to Claude (plan step 16); handlers never decide policy.
+ * Execute one tool call. Throws a `ToolError` (see ./errors) on unknown
+ * tool name, invalid input, or upstream failure — the Phase 3 loop
+ * catches it, logs the carried class, and returns an is_error
+ * tool_result to Claude (plan step 16); handlers never decide policy.
  */
 export async function runTool(toolName: string, input: unknown): Promise<ToolDataResult> {
 	if (gmlToolNames.includes(toolName)) return runGmlTool(toolName, input);
 	if (nceiToolNames.includes(toolName)) return runNceiTool(toolName, input);
 	if (seaIceToolNames.includes(toolName)) return runArcticSeaIce(input);
 	if (openMeteoToolNames.includes(toolName)) return runCityTemperatureHistory(input);
-	throw new Error(`Unknown tool: ${toolName}`);
+	throw new ToolError('unknown_tool', `Unknown tool: ${toolName}`);
 }

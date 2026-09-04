@@ -21,6 +21,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartDataset, ClaudeChartDataset, ToolDataResult, WorkerResponse } from './types';
 import { SYSTEM_PROMPT } from './prompts';
+import { ToolError, type ToolErrorClass } from './tools/errors';
 import { allToolDefinitions, runTool } from './tools/registry';
 
 export const MODEL = 'claude-sonnet-5';
@@ -39,8 +40,7 @@ const FALLBACK_ANSWER = 'Sorry — something went wrong while putting that answe
 
 export type MessageCreator = (params: MessageCreateParamsNonStreaming) => Promise<Message>;
 
-type ErrorClass =
-	'tool_fetch_failed' | 'tool_parse_failed' | 'tool_input_invalid' | 'claude_malformed_json' | 'chart_injection_mismatch' | 'unhandled';
+type ErrorClass = ToolErrorClass | 'claude_malformed_json' | 'chart_injection_mismatch' | 'unhandled';
 
 /**
  * Structured error logging (plan step 16): lands in Workers Logs via
@@ -48,12 +48,6 @@ type ErrorClass =
  */
 export function logError(errorClass: ErrorClass, fields: { tool?: string; upstreamStatus?: number; message: string }): void {
 	console.error(JSON.stringify({ class: errorClass, ...fields }));
-}
-
-function classifyToolError(message: string): ErrorClass {
-	if (/fetch failed: \d+/.test(message)) return 'tool_fetch_failed';
-	if (/must be|limited to|non-empty/.test(message)) return 'tool_input_invalid';
-	return 'tool_parse_failed';
 }
 
 /** Put a cache_control breakpoint on the last content block of the last message. */
@@ -99,7 +93,11 @@ export async function askClaude(messages: MessageParam[], createMessage: Message
 					results.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(data) });
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
-					logError(classifyToolError(message), { tool: block.name, message });
+					// The class is carried on the ToolError from the throw site
+					// (tools/errors.ts); anything else escaping a handler is a bug.
+					const errorClass: ErrorClass = error instanceof ToolError ? error.toolErrorClass : 'unhandled';
+					const upstreamStatus = error instanceof ToolError ? error.upstreamStatus : undefined;
+					logError(errorClass, { tool: block.name, upstreamStatus, message });
 					// is_error tool_result: Claude sees the failure and answers
 					// per Section 7 ("say so plainly") instead of crashing the request
 					results.push({ type: 'tool_result', tool_use_id: block.id, content: message, is_error: true });

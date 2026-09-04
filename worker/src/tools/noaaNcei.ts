@@ -9,6 +9,7 @@
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
+import { ToolError } from './errors';
 
 const CAG_BASE = 'https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean';
 const OHC_BASE = 'https://www.ncei.noaa.gov/data/oceans/woa/DATA_ANALYSIS/3M_HEAT_CONTENT/DATA/basin/yearly';
@@ -33,7 +34,7 @@ interface CagResponse {
 export function parseCagJson(body: unknown): ChartPoint[] {
 	const data = (body as CagResponse | null)?.data;
 	if (!data || typeof data !== 'object') {
-		throw new Error('NOAA NCEI CAG: response has no "data" object');
+		throw new ToolError('tool_parse_failed', 'NOAA NCEI CAG: response has no "data" object');
 	}
 
 	const points: ChartPoint[] = [];
@@ -56,7 +57,7 @@ export function parseCagJson(body: unknown): ChartPoint[] {
 	}
 
 	if (points.length === 0) {
-		throw new Error('NOAA NCEI CAG: no data points parsed');
+		throw new ToolError('tool_parse_failed', 'NOAA NCEI CAG: no data points parsed');
 	}
 	return points.sort((a, b) => a.x - b.x);
 }
@@ -69,13 +70,14 @@ export async function runSurfaceTemperature(input: unknown): Promise<ToolDataRes
 	};
 
 	if (scale !== 'monthly' && scale !== 'annual') {
-		throw new Error('get_surface_temperature: scale must be "monthly" or "annual"');
+		throw new ToolError('tool_input_invalid', 'get_surface_temperature: scale must be "monthly" or "annual"');
 	}
 	const start = Number(start_year);
 	const end = Number(end_year);
 	const maxYear = new Date().getUTCFullYear();
 	if (!Number.isInteger(start) || !Number.isInteger(end) || start > end || start < CAG_FIRST_YEAR || end > maxYear + 1) {
-		throw new Error(
+		throw new ToolError(
+			'tool_input_invalid',
 			`get_surface_temperature: start_year/end_year must be integers with ${CAG_FIRST_YEAR} <= start <= end <= ${maxYear + 1}`,
 		);
 	}
@@ -85,7 +87,7 @@ export async function runSurfaceTemperature(input: unknown): Promise<ToolDataRes
 	const url = `${CAG_BASE}/${scalePath}/${start}-${end}.json`;
 	const response = await fetch(url);
 	if (!response.ok) {
-		throw new Error(`NOAA NCEI CAG fetch failed: ${response.status} for ${url}`);
+		throw new ToolError('tool_fetch_failed', `NOAA NCEI CAG fetch failed: ${response.status} for ${url}`, response.status);
 	}
 
 	const points = parseCagJson(await response.json());
@@ -117,14 +119,14 @@ export function parseOhcDat(text: string, basinColumn: string): ChartPoint[] {
 		.filter((line) => line.length > 0);
 
 	if (lines.length < 2) {
-		throw new Error('NOAA NCEI OHC: no header/data rows found');
+		throw new ToolError('tool_parse_failed', 'NOAA NCEI OHC: no header/data rows found');
 	}
 
 	const header = lines[0].split(/\s+/);
 	const yearIndex = header.indexOf('YEAR');
 	const basinIndex = header.indexOf(basinColumn);
 	if (yearIndex === -1 || basinIndex === -1) {
-		throw new Error(`NOAA NCEI OHC: expected "YEAR" and "${basinColumn}" columns, got header "${lines[0]}"`);
+		throw new ToolError('tool_parse_failed', `NOAA NCEI OHC: expected "YEAR" and "${basinColumn}" columns, got header "${lines[0]}"`);
 	}
 
 	const points: ChartPoint[] = [];
@@ -138,7 +140,7 @@ export function parseOhcDat(text: string, basinColumn: string): ChartPoint[] {
 	}
 
 	if (points.length === 0) {
-		throw new Error('NOAA NCEI OHC: header matched but no data rows parsed');
+		throw new ToolError('tool_parse_failed', 'NOAA NCEI OHC: header matched but no data rows parsed');
 	}
 	return points;
 }
@@ -148,16 +150,16 @@ export async function runOceanHeatContent(input: unknown): Promise<ToolDataResul
 
 	const basinConfig = OHC_BASIN_CONFIG[basin as OhcBasin];
 	if (!basinConfig) {
-		throw new Error('get_ocean_heat_content: basin must be "world", "pacific", "atlantic", or "indian"');
+		throw new ToolError('tool_input_invalid', 'get_ocean_heat_content: basin must be "world", "pacific", "atlantic", or "indian"');
 	}
 	if (depth !== '700m' && depth !== '2000m') {
-		throw new Error('get_ocean_heat_content: depth must be "700m" or "2000m"');
+		throw new ToolError('tool_input_invalid', 'get_ocean_heat_content: depth must be "700m" or "2000m"');
 	}
 
 	const url = `${OHC_BASE}/h22-${basinConfig.fileCode}-${depth === '700m' ? '700' : '2000'}m.dat`;
 	const response = await fetch(url);
 	if (!response.ok) {
-		throw new Error(`NOAA NCEI OHC fetch failed: ${response.status} for ${url}`);
+		throw new ToolError('tool_fetch_failed', `NOAA NCEI OHC fetch failed: ${response.status} for ${url}`, response.status);
 	}
 
 	const points = parseOhcDat(await response.text(), basinConfig.column);
@@ -221,5 +223,5 @@ export const nceiToolNames = ['get_surface_temperature', 'get_ocean_heat_content
 export async function runNceiTool(toolName: string, input: unknown): Promise<ToolDataResult> {
 	if (toolName === 'get_surface_temperature') return runSurfaceTemperature(input);
 	if (toolName === 'get_ocean_heat_content') return runOceanHeatContent(input);
-	throw new Error(`Unknown NOAA NCEI tool: ${toolName}`);
+	throw new ToolError('unknown_tool', `Unknown NOAA NCEI tool: ${toolName}`);
 }

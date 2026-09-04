@@ -8,6 +8,7 @@
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
+import { ToolError } from './errors';
 
 const GML_BASE = 'https://gml.noaa.gov/webdata/ccgg/trends';
 
@@ -47,7 +48,7 @@ export function parseGmlCsv(csv: string, granularity: GmlGranularity): ChartPoin
 		.filter((line) => line.length > 0 && !line.startsWith('#'));
 
 	if (lines.length < 2) {
-		throw new Error('NOAA GML CSV: no header/data rows found');
+		throw new ToolError('tool_parse_failed', 'NOAA GML CSV: no header/data rows found');
 	}
 
 	const header = lines[0].split(',').map((column) => column.trim().toLowerCase());
@@ -57,7 +58,7 @@ export function parseGmlCsv(csv: string, granularity: GmlGranularity): ChartPoin
 	const yIndex = header.indexOf(yName);
 
 	if (xIndex === -1 || yIndex === -1) {
-		throw new Error(`NOAA GML CSV: expected "${xName}" and "${yName}" columns, got header "${lines[0]}"`);
+		throw new ToolError('tool_parse_failed', `NOAA GML CSV: expected "${xName}" and "${yName}" columns, got header "${lines[0]}"`);
 	}
 
 	const points: ChartPoint[] = [];
@@ -73,7 +74,7 @@ export function parseGmlCsv(csv: string, granularity: GmlGranularity): ChartPoin
 	}
 
 	if (points.length === 0) {
-		throw new Error('NOAA GML CSV: header matched but no data rows parsed');
+		throw new ToolError('tool_parse_failed', 'NOAA GML CSV: header matched but no data rows parsed');
 	}
 
 	return points;
@@ -90,18 +91,18 @@ function isGmlGranularity(value: unknown): value is GmlGranularity {
 export async function runGmlTool(toolName: string, input: unknown): Promise<ToolDataResult> {
 	const gas = GASES.find((candidate) => candidate.toolName === toolName);
 	if (!gas) {
-		throw new Error(`Unknown NOAA GML tool: ${toolName}`);
+		throw new ToolError('unknown_tool', `Unknown NOAA GML tool: ${toolName}`);
 	}
 
 	const granularity = (input as { granularity?: unknown } | null)?.granularity;
 	if (!isGmlGranularity(granularity)) {
-		throw new Error(`${toolName}: granularity must be "monthly" or "annual"`);
+		throw new ToolError('tool_input_invalid', `${toolName}: granularity must be "monthly" or "annual"`);
 	}
 
 	const url = gmlUrl(gas.slug, granularity);
 	const response = await fetch(url);
 	if (!response.ok) {
-		throw new Error(`NOAA GML fetch failed: ${response.status} for ${url}`);
+		throw new ToolError('tool_fetch_failed', `NOAA GML fetch failed: ${response.status} for ${url}`, response.status);
 	}
 
 	const points = parseGmlCsv(await response.text(), granularity);
