@@ -12,6 +12,7 @@
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
+import { ToolError } from './errors';
 
 const SEA_ICE_BASE = 'https://noaadata.apps.nsidc.org/NOAA/G02135/north/monthly/data';
 
@@ -42,14 +43,14 @@ export function parseSeaIceCsv(csv: string): ChartPoint[] {
 		.filter((line) => line.length > 0);
 
 	if (lines.length < 2) {
-		throw new Error('NSIDC sea ice CSV: no header/data rows found');
+		throw new ToolError('tool_parse_failed', 'NSIDC sea ice CSV: no header/data rows found');
 	}
 
 	const header = lines[0].split(',').map((column) => column.trim().toLowerCase());
 	const yearIndex = header.indexOf('year');
 	const extentIndex = header.indexOf('extent');
 	if (yearIndex === -1 || extentIndex === -1) {
-		throw new Error(`NSIDC sea ice CSV: expected "year" and "extent" columns, got header "${lines[0]}"`);
+		throw new ToolError('tool_parse_failed', `NSIDC sea ice CSV: expected "year" and "extent" columns, got header "${lines[0]}"`);
 	}
 
 	const points: ChartPoint[] = [];
@@ -65,7 +66,7 @@ export function parseSeaIceCsv(csv: string): ChartPoint[] {
 	}
 
 	if (points.length === 0) {
-		throw new Error('NSIDC sea ice CSV: header matched but no data rows parsed');
+		throw new ToolError('tool_parse_failed', 'NSIDC sea ice CSV: header matched but no data rows parsed');
 	}
 	return points;
 }
@@ -73,14 +74,14 @@ export function parseSeaIceCsv(csv: string): ChartPoint[] {
 export async function runArcticSeaIce(input: unknown): Promise<ToolDataResult> {
 	const month = Number((input as { month?: unknown } | null)?.month);
 	if (!Number.isInteger(month) || month < 1 || month > 12) {
-		throw new Error('get_arctic_sea_ice: month must be an integer from 1 to 12');
+		throw new ToolError('tool_input_invalid', 'get_arctic_sea_ice: month must be an integer from 1 to 12');
 	}
 
 	const paddedMonth = String(month).padStart(2, '0');
 	const url = `${SEA_ICE_BASE}/N_${paddedMonth}_extent_v4.0.csv`;
 	const response = await fetch(url);
 	if (!response.ok) {
-		throw new Error(`NSIDC sea ice fetch failed: ${response.status} for ${url}`);
+		throw new ToolError('tool_fetch_failed', `NSIDC sea ice fetch failed: ${response.status} for ${url}`, response.status);
 	}
 
 	const points = parseSeaIceCsv(await response.text());

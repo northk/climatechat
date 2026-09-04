@@ -13,6 +13,7 @@
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
+import { ToolError } from './errors';
 
 const GEOCODE_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const ARCHIVE_URL = 'https://archive-api.open-meteo.com/v1/archive';
@@ -70,11 +71,11 @@ interface GeocodeResponse {
 export function parseGeocodeJson(body: unknown, cityQuery: string): GeocodedCity {
 	const first = (body as GeocodeResponse | null)?.results?.[0];
 	if (!first) {
-		throw new Error(`Open-Meteo geocoding: no results for city "${cityQuery}"`);
+		throw new ToolError('tool_input_invalid', `Open-Meteo geocoding: no results for city "${cityQuery}"`);
 	}
 	const { name, latitude, longitude, country_code } = first;
 	if (typeof name !== 'string' || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-		throw new Error('Open-Meteo geocoding: malformed result entry');
+		throw new ToolError('tool_parse_failed', 'Open-Meteo geocoding: malformed result entry');
 	}
 	return {
 		name,
@@ -110,7 +111,7 @@ export function aggregateArchive(body: unknown, granularity: CityGranularity): C
 	const times = daily?.time;
 	const temps = daily?.temperature_2m_mean;
 	if (!Array.isArray(times) || !Array.isArray(temps) || times.length !== temps.length) {
-		throw new Error('Open-Meteo archive: response missing aligned daily.time/temperature_2m_mean arrays');
+		throw new ToolError('tool_parse_failed', 'Open-Meteo archive: response missing aligned daily.time/temperature_2m_mean arrays');
 	}
 
 	const buckets = new Map<string, { sum: number; count: number; x: number }>();
@@ -155,7 +156,7 @@ export function aggregateArchive(body: unknown, granularity: CityGranularity): C
 	}
 
 	if (points.length === 0) {
-		throw new Error(`Open-Meteo archive: no complete ${granularity} periods in the response`);
+		throw new ToolError('tool_parse_failed', `Open-Meteo archive: no complete ${granularity} periods in the response`);
 	}
 	return points.sort((a, b) => a.x - b.x);
 }
@@ -178,11 +179,11 @@ export async function runCityTemperatureHistory(input: unknown): Promise<ToolDat
 	};
 
 	if (typeof city !== 'string' || city.trim().length === 0) {
-		throw new Error('get_city_temperature_history: city must be a non-empty string');
+		throw new ToolError('tool_input_invalid', 'get_city_temperature_history: city must be a non-empty string');
 	}
 	const granularity = rawGranularity === undefined ? 'annual' : rawGranularity;
 	if (!isCityGranularity(granularity)) {
-		throw new Error('get_city_temperature_history: granularity must be "annual", "monthly", or "weekly"');
+		throw new ToolError('tool_input_invalid', 'get_city_temperature_history: granularity must be "annual", "monthly", or "weekly"');
 	}
 
 	// Annual means need complete years, so the current year is excluded;
@@ -203,20 +204,22 @@ export async function runCityTemperatureHistory(input: unknown): Promise<ToolDat
 	}
 
 	if (!Number.isInteger(start) || !Number.isInteger(end) || start > end || start < ARCHIVE_FIRST_YEAR || end > maxYear) {
-		throw new Error(
+		throw new ToolError(
+			'tool_input_invalid',
 			`get_city_temperature_history: start_year/end_year must be integers with ${ARCHIVE_FIRST_YEAR} <= start <= end <= ${maxYear} (for ${granularity} granularity)`,
 		);
 	}
 	const spanYears = end - start + 1;
 	if (spanYears > MAX_SPAN_YEARS[granularity]) {
-		throw new Error(
+		throw new ToolError(
+			'tool_input_invalid',
 			`get_city_temperature_history: ${granularity} granularity is limited to a ${MAX_SPAN_YEARS[granularity]}-year span (got ${spanYears}); narrow the range or use a coarser granularity`,
 		);
 	}
 
 	const geocodeResponse = await fetch(`${GEOCODE_URL}?name=${encodeURIComponent(city.trim())}&count=1`);
 	if (!geocodeResponse.ok) {
-		throw new Error(`Open-Meteo geocoding fetch failed: ${geocodeResponse.status}`);
+		throw new ToolError('tool_fetch_failed', `Open-Meteo geocoding fetch failed: ${geocodeResponse.status}`, geocodeResponse.status);
 	}
 	const geocoded = parseGeocodeJson(await geocodeResponse.json(), city.trim());
 
@@ -230,7 +233,7 @@ export async function runCityTemperatureHistory(input: unknown): Promise<ToolDat
 		`&daily=temperature_2m_mean&timezone=auto`;
 	const archiveResponse = await fetch(archiveUrl);
 	if (!archiveResponse.ok) {
-		throw new Error(`Open-Meteo archive fetch failed: ${archiveResponse.status}`);
+		throw new ToolError('tool_fetch_failed', `Open-Meteo archive fetch failed: ${archiveResponse.status}`, archiveResponse.status);
 	}
 	const points = aggregateArchive(await archiveResponse.json(), granularity);
 

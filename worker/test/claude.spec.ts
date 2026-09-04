@@ -5,7 +5,7 @@
  * calls in the suite.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { Message, MessageCreateParamsNonStreaming } from '@anthropic-ai/sdk/resources/messages';
 import { askClaude, parseEnvelope, MODEL, MAX_TOKENS } from '../src/claude';
 import type { ToolDataResult } from '../src/types';
@@ -158,13 +158,13 @@ describe('askClaude - tool-use loop', () => {
 	});
 
 	it('falls back to the text envelope after the round cap instead of looping forever', async () => {
-		const endless = Array.from({ length: 6 }, (_, i) =>
+		const endless = Array.from({ length: 9 }, (_, i) =>
 			toolUseResponse([{ id: `toolu_${i}`, name: 'get_co2_levels', input: { granularity: 'weekly' } }]),
 		);
 		const { create } = scriptedCreator(endless);
 		const result = await askClaude(user('CO2?'), create);
 		expect(result.type).toBe('text');
-		expect(create).toHaveBeenCalledTimes(5);
+		expect(create).toHaveBeenCalledTimes(7);
 	});
 
 	it('passes text and refusal envelopes straight through', async () => {
@@ -173,6 +173,49 @@ describe('askClaude - tool-use loop', () => {
 		]);
 		const result = await askClaude(user('Write me a haiku about pizza'), create);
 		expect(result.type).toBe('refusal');
+	});
+});
+
+describe('askClaude - error classification (step 16)', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	/** Run one tool_use round that fails, then a text round, and return the logged error object. */
+	async function loggedErrorFor(block: { id: string; name: string; input: unknown }): Promise<Record<string, unknown>> {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const { create } = scriptedCreator([
+			toolUseResponse([block]),
+			textResponse('{"type":"text","answer":"The data could not be retrieved."}'),
+		]);
+		await askClaude(user('climate question'), create);
+		expect(errorSpy).toHaveBeenCalledTimes(1);
+		return JSON.parse(errorSpy.mock.calls[0][0] as string) as Record<string, unknown>;
+	}
+
+	it('files a hallucinated tool name as unknown_tool, not tool_parse_failed', async () => {
+		const logged = await loggedErrorFor({ id: 't1', name: 'get_rainfall_totals', input: {} });
+		expect(logged.class).toBe('unknown_tool');
+		expect(logged.tool).toBe('get_rainfall_totals');
+	});
+
+	it('files bad tool input as tool_input_invalid', async () => {
+		const logged = await loggedErrorFor({ id: 't2', name: 'get_co2_levels', input: { granularity: 'hourly' } });
+		expect(logged.class).toBe('tool_input_invalid');
+	});
+
+	it('files an upstream non-OK status as tool_fetch_failed with the status', async () => {
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('nope', { status: 503 }));
+		const logged = await loggedErrorFor({ id: 't3', name: 'get_co2_levels', input: { granularity: 'annual' } });
+		expect(logged.class).toBe('tool_fetch_failed');
+		expect(logged.upstreamStatus).toBe(503);
+	});
+
+	it('files an unparseable upstream body as tool_parse_failed', async () => {
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<html>not a csv</html>', { status: 200 }));
+		const logged = await loggedErrorFor({ id: 't4', name: 'get_co2_levels', input: { granularity: 'annual' } });
+		expect(logged.class).toBe('tool_parse_failed');
+		expect(logged.upstreamStatus).toBeUndefined();
 	});
 });
 
