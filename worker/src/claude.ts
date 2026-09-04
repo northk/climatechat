@@ -1,6 +1,6 @@
 /**
  * Claude agentic loop (plan step 16): send → execute tool calls →
- * repeat (≤5 rounds) → parse the JSON envelope → for charts, inject
+ * repeat (≤7 rounds) → parse the JSON envelope → for charts, inject
  * real data points by sourceToolCallId (Section 4).
  *
  * Never sets temperature/top_p/top_k — claude-sonnet-5 returns 400 on
@@ -26,8 +26,13 @@ import { allToolDefinitions, runTool } from './tools/registry';
 export const MODEL = 'claude-sonnet-5';
 /** Sized for Sonnet 5's tokenizer — see CLAUDE.md; do not reuse old-model intuitions. */
 export const MAX_TOKENS = 1536;
-/** Tool-use round cap from the architecture diagram (Section 2). */
-const MAX_ROUNDS = 5;
+/**
+ * Tool-use round cap (Section 2 architecture diagram). Raised 5→7 on
+ * 2026-09-03: Sonnet 5 intermittently emits a stray tool_use (e.g. a
+ * hallucinated chart tool — see prompts.ts rule 9) that the loop absorbs
+ * as an is_error result but which still costs a round. See plan step 16.
+ */
+const MAX_ROUNDS = 7;
 
 /** R2 fallback answer when Claude's output can't be turned into an envelope. */
 const FALLBACK_ANSWER = 'Sorry — something went wrong while putting that answer together. Please try asking again.';

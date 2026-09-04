@@ -158,13 +158,13 @@ describe('askClaude - tool-use loop', () => {
 	});
 
 	it('falls back to the text envelope after the round cap instead of looping forever', async () => {
-		const endless = Array.from({ length: 6 }, (_, i) =>
+		const endless = Array.from({ length: 9 }, (_, i) =>
 			toolUseResponse([{ id: `toolu_${i}`, name: 'get_co2_levels', input: { granularity: 'weekly' } }]),
 		);
 		const { create } = scriptedCreator(endless);
 		const result = await askClaude(user('CO2?'), create);
 		expect(result.type).toBe('text');
-		expect(create).toHaveBeenCalledTimes(5);
+		expect(create).toHaveBeenCalledTimes(7);
 	});
 
 	it('passes text and refusal envelopes straight through', async () => {
