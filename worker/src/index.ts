@@ -20,6 +20,16 @@ import { cacheGet, cacheSet } from './cache';
 import { checkAndIncrement, DAILY_LIMIT } from './rateLimit';
 import type { WorkerResponse } from './types';
 
+/** Constant-time string compare — no first-mismatch timing oracle on the secret. */
+function timingSafeEqual(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	let mismatch = 0;
+	for (let i = 0; i < a.length; i++) {
+		mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+	}
+	return mismatch === 0;
+}
+
 /**
  * Shared-secret client check (step 22, R10). Its own function — not
  * inlined — so swapping in Apple App Attest later is a one-function
@@ -27,7 +37,8 @@ import type { WorkerResponse } from './types';
  */
 export function verifyClient(request: Request, env: Env): boolean {
 	const provided = request.headers.get('X-App-Secret');
-	return typeof env.APP_SECRET === 'string' && env.APP_SECRET.length > 0 && provided === env.APP_SECRET;
+	if (typeof env.APP_SECRET !== 'string' || env.APP_SECRET.length === 0 || provided === null) return false;
+	return timingSafeEqual(provided, env.APP_SECRET);
 }
 
 /** Validate the request body into a Claude-ready message history. */
@@ -39,8 +50,13 @@ export function parseMessages(body: unknown): MessageParam[] | null {
 		if (role !== 'user' && role !== 'assistant') return null;
 		if (typeof content !== 'string' || content.trim().length === 0) return null;
 	}
-	const last = messages[messages.length - 1] as { role: string };
-	if (last.role !== 'user') return null;
+	// The API merges consecutive same-role turns, so alternation isn't
+	// required — but the first turn must be `user` and so must the last
+	// (a real answer can't come before a question). Reject anything else
+	// here rather than spending a rate-limit slot and a Claude call on a
+	// request the API will 400.
+	if ((messages[0] as { role: string }).role !== 'user') return null;
+	if ((messages[messages.length - 1] as { role: string }).role !== 'user') return null;
 	return messages as MessageParam[];
 }
 

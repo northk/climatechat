@@ -13,7 +13,7 @@
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
-import { ToolError, readJsonBody } from './errors';
+import { ToolError, fetchJson } from './errors';
 
 const GEOCODE_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const ARCHIVE_URL = 'https://archive-api.open-meteo.com/v1/archive';
@@ -71,6 +71,9 @@ interface GeocodeResponse {
 export function parseGeocodeJson(body: unknown, cityQuery: string): GeocodedCity {
 	const first = (body as GeocodeResponse | null)?.results?.[0];
 	if (!first) {
+		// tool_input_invalid, not tool_parse_failed: an unresolved city is
+		// almost always a bad/obscure query. A geocoder outage would surface
+		// as a non-2xx or invalid JSON instead. (Pre-Phase-4 review #8.)
 		throw new ToolError('tool_input_invalid', `Open-Meteo geocoding: no results for city "${cityQuery}"`);
 	}
 	const { name, latitude, longitude, country_code } = first;
@@ -217,11 +220,8 @@ export async function runCityTemperatureHistory(input: unknown): Promise<ToolDat
 		);
 	}
 
-	const geocodeResponse = await fetch(`${GEOCODE_URL}?name=${encodeURIComponent(city.trim())}&count=1`);
-	if (!geocodeResponse.ok) {
-		throw new ToolError('tool_fetch_failed', `Open-Meteo geocoding fetch failed: ${geocodeResponse.status}`, geocodeResponse.status);
-	}
-	const geocoded = parseGeocodeJson(await readJsonBody(geocodeResponse, 'Open-Meteo geocoding'), city.trim());
+	const geocodeUrl = `${GEOCODE_URL}?name=${encodeURIComponent(city.trim())}&count=1`;
+	const geocoded = parseGeocodeJson(await fetchJson(geocodeUrl, 'Open-Meteo geocoding'), city.trim());
 
 	// Clamp to today when the range includes the current year — the archive
 	// API rejects future dates
@@ -231,11 +231,7 @@ export async function runCityTemperatureHistory(input: unknown): Promise<ToolDat
 		`${ARCHIVE_URL}?latitude=${geocoded.latitude}&longitude=${geocoded.longitude}` +
 		`&start_date=${start}-01-01&end_date=${endDate}` +
 		`&daily=temperature_2m_mean&timezone=auto`;
-	const archiveResponse = await fetch(archiveUrl);
-	if (!archiveResponse.ok) {
-		throw new ToolError('tool_fetch_failed', `Open-Meteo archive fetch failed: ${archiveResponse.status}`, archiveResponse.status);
-	}
-	const points = aggregateArchive(await readJsonBody(archiveResponse, 'Open-Meteo archive'), granularity);
+	const points = aggregateArchive(await fetchJson(archiveUrl, 'Open-Meteo archive'), granularity);
 
 	const place = geocoded.countryCode ? `${geocoded.name}, ${geocoded.countryCode}` : geocoded.name;
 	return {

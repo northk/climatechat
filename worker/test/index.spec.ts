@@ -65,7 +65,8 @@ describe('verifyClient (step 23)', () => {
 
 	it('accepts only the exact secret', () => {
 		expect(verifyClient(request(SECRET), env)).toBe(true);
-		expect(verifyClient(request('wrong'), env)).toBe(false);
+		expect(verifyClient(request('wrong'), env)).toBe(false); // length mismatch
+		expect(verifyClient(request(SECRET.slice(0, -1) + 'X'), env)).toBe(false); // same length, last char differs
 		expect(verifyClient(request(), env)).toBe(false);
 	});
 
@@ -89,11 +90,23 @@ describe('parseMessages', () => {
 		expect(parseMessages({ messages: [] })).toBeNull();
 		expect(parseMessages({ messages: [{ role: 'system', content: 'x' }] })).toBeNull();
 		expect(parseMessages({ messages: [{ role: 'user', content: '  ' }] })).toBeNull();
+		// ends in an assistant turn
 		expect(
 			parseMessages({
 				messages: [
 					{ role: 'user', content: 'q' },
 					{ role: 'assistant', content: 'a' },
+				],
+			}),
+		).toBeNull();
+	});
+
+	it('rejects a history that starts with an assistant turn (API would 400)', () => {
+		expect(
+			parseMessages({
+				messages: [
+					{ role: 'assistant', content: 'Hello!' },
+					{ role: 'user', content: 'CO2?' },
 				],
 			}),
 		).toBeNull();

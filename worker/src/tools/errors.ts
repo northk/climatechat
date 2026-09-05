@@ -1,5 +1,8 @@
 /**
- * Tool error taxonomy (plan step 16).
+ * Tool error taxonomy (plan step 16) plus the shared upstream-fetch
+ * helpers that raise it (`fetchOk` / `fetchJson` / `readJsonBody`) — so
+ * every handler's fetch → status-check → parse path is one line, not a
+ * copy that can drift out of sync (pre-Phase-4 review finding #9).
  *
  * The tool handlers throw on failure; the loop in `claude.ts`, not the
  * handlers, owns failure *policy* (whether to retry, how to tell Claude).
@@ -39,6 +42,21 @@ export class ToolError extends Error {
 }
 
 /**
+ * `fetch` a URL, returning the response or throwing `tool_fetch_failed`
+ * (carrying the HTTP status) on a non-OK status. `source` is the
+ * citation-style prefix, e.g. "NOAA GML". The URL is deliberately kept
+ * out of the message — an Open-Meteo URL carries a city name and
+ * coordinates, and step 16's rule keeps user-derived content out of logs.
+ */
+export async function fetchOk(url: string, source: string): Promise<Response> {
+	const response = await fetch(url);
+	if (!response.ok) {
+		throw new ToolError('tool_fetch_failed', `${source} fetch failed: ${response.status}`, response.status);
+	}
+	return response;
+}
+
+/**
  * Parse a JSON response body, converting a `SyntaxError` (upstream sent
  * HTTP 200 with a non-JSON body — CDN error page, truncated response)
  * into a `tool_parse_failed` `ToolError`. Without this the raw
@@ -51,4 +69,9 @@ export async function readJsonBody(response: Response, source: string): Promise<
 	} catch {
 		throw new ToolError('tool_parse_failed', `${source}: response body was not valid JSON`);
 	}
+}
+
+/** `fetchOk` + `readJsonBody` — for the upstreams that return JSON. */
+export async function fetchJson(url: string, source: string): Promise<unknown> {
+	return readJsonBody(await fetchOk(url, source), source);
 }
