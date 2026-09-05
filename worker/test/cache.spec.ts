@@ -1,17 +1,19 @@
 /**
  * Answer cache tests (plan step 21): the single-turn-only rule (R9),
- * the never-cache-refusals rule (8.2), and TTL selection. Real KV
- * simulation via vitest-pool-workers.
+ * the never-cache-refusals and never-cache-degraded rules (8.2), and
+ * TTL selection. Real KV simulation via vitest-pool-workers.
  */
 
 import { env } from 'cloudflare:test';
 import { describe, it, expect } from 'vitest';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
 import { cacheGet, cacheSet, cacheableQuestion, selectTtl } from '../src/cache';
+import { FALLBACK_ANSWER } from '../src/claude';
 import type { WorkerResponse } from '../src/types';
 
 const textAnswer: WorkerResponse = { type: 'text', answer: 'CO2 is 424 ppm (NOAA GML).' };
 const refusal: WorkerResponse = { type: 'refusal', answer: 'ClimateChat only answers climate questions.' };
+const degraded: WorkerResponse = { type: 'text', answer: FALLBACK_ANSWER };
 
 const singleTurn = (question: string): MessageParam[] => [{ role: 'user', content: question }];
 const multiTurn = (question: string): MessageParam[] => [
@@ -57,6 +59,15 @@ describe('cacheGet / cacheSet round trip', () => {
 		const messages = singleTurn('Write me a haiku about pizza [t4]');
 		await cacheSet(env.CLIMATE_KV, messages, refusal);
 		expect(await cacheGet(env.CLIMATE_KV, messages)).toBeNull();
+	});
+
+	it('never writes the degraded FALLBACK_ANSWER (8.2)', async () => {
+		const messages = singleTurn('How has the CO2 trend changed since 1960? [t5]');
+		await cacheSet(env.CLIMATE_KV, messages, degraded);
+		expect(await cacheGet(env.CLIMATE_KV, messages)).toBeNull();
+		// A real answer to the same question still caches
+		await cacheSet(env.CLIMATE_KV, messages, textAnswer);
+		expect(await cacheGet(env.CLIMATE_KV, messages)).toEqual(textAnswer);
 	});
 });
 

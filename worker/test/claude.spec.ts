@@ -174,6 +174,38 @@ describe('askClaude - tool-use loop', () => {
 		const result = await askClaude(user('Write me a haiku about pizza'), create);
 		expect(result.type).toBe('refusal');
 	});
+
+	it("dispatches a round's tool calls concurrently and returns all results in one message", async () => {
+		let started = 0;
+		let openGate!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			openGate = resolve;
+		});
+		const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+			started++;
+			await gate; // hold every fetch open until the test releases it
+			return new Response('year,mean,unc\n1979,336.85,0.10\n1980,338.91,0.07', { status: 200 });
+		});
+
+		const { create, calls } = scriptedCreator([
+			toolUseResponse([
+				{ id: 'a', name: 'get_co2_levels', input: { granularity: 'annual' } },
+				{ id: 'b', name: 'get_methane_levels', input: { granularity: 'annual' } },
+			]),
+			textResponse('{"type":"text","answer":"done"}'),
+		]);
+
+		const done = askClaude(user('compare CO2 and methane trends'), create);
+		await new Promise((resolve) => setTimeout(resolve, 0)); // let both mapped fns reach their await
+		expect(started).toBe(2); // sequential execution would show 1 here
+		openGate();
+		await done;
+		fetchSpy.mockRestore();
+
+		const toolResultMsg = calls[1].messages[calls[1].messages.length - 1];
+		const blocks = toolResultMsg.content as { type: string; tool_use_id: string }[];
+		expect(blocks.map((block) => block.tool_use_id)).toEqual(['a', 'b']);
+	});
 });
 
 describe('askClaude - error classification (step 16)', () => {
@@ -216,6 +248,19 @@ describe('askClaude - error classification (step 16)', () => {
 		const logged = await loggedErrorFor({ id: 't4', name: 'get_co2_levels', input: { granularity: 'annual' } });
 		expect(logged.class).toBe('tool_parse_failed');
 		expect(logged.upstreamStatus).toBeUndefined();
+	});
+
+	it('files an invalid-JSON body from a JSON upstream as tool_parse_failed, not unhandled', async () => {
+		// HTTP 200 + a non-JSON body: response.json() throws a native
+		// SyntaxError. readJsonBody must wrap it as a ToolError so it lands
+		// in the drift class, not 'unhandled'.
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<html>maintenance</html>', { status: 200 }));
+		const logged = await loggedErrorFor({
+			id: 't5',
+			name: 'get_surface_temperature',
+			input: { start_year: 2000, end_year: 2010, scale: 'annual' },
+		});
+		expect(logged.class).toBe('tool_parse_failed');
 	});
 });
 

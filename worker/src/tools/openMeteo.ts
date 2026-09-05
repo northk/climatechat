@@ -13,7 +13,7 @@
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
-import { ToolError } from './errors';
+import { ToolError, readJsonBody } from './errors';
 
 const GEOCODE_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const ARCHIVE_URL = 'https://archive-api.open-meteo.com/v1/archive';
@@ -221,7 +221,7 @@ export async function runCityTemperatureHistory(input: unknown): Promise<ToolDat
 	if (!geocodeResponse.ok) {
 		throw new ToolError('tool_fetch_failed', `Open-Meteo geocoding fetch failed: ${geocodeResponse.status}`, geocodeResponse.status);
 	}
-	const geocoded = parseGeocodeJson(await geocodeResponse.json(), city.trim());
+	const geocoded = parseGeocodeJson(await readJsonBody(geocodeResponse, 'Open-Meteo geocoding'), city.trim());
 
 	// Clamp to today when the range includes the current year — the archive
 	// API rejects future dates
@@ -235,7 +235,7 @@ export async function runCityTemperatureHistory(input: unknown): Promise<ToolDat
 	if (!archiveResponse.ok) {
 		throw new ToolError('tool_fetch_failed', `Open-Meteo archive fetch failed: ${archiveResponse.status}`, archiveResponse.status);
 	}
-	const points = aggregateArchive(await archiveResponse.json(), granularity);
+	const points = aggregateArchive(await readJsonBody(archiveResponse, 'Open-Meteo archive'), granularity);
 
 	const place = geocoded.countryCode ? `${geocoded.name}, ${geocoded.countryCode}` : geocoded.name;
 	return {

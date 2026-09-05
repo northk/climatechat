@@ -37,3 +37,18 @@ export class ToolError extends Error {
 		this.upstreamStatus = upstreamStatus;
 	}
 }
+
+/**
+ * Parse a JSON response body, converting a `SyntaxError` (upstream sent
+ * HTTP 200 with a non-JSON body — CDN error page, truncated response)
+ * into a `tool_parse_failed` `ToolError`. Without this the raw
+ * `SyntaxError` reaches the loop as a non-`ToolError` and is misfiled as
+ * `unhandled` instead of the upstream-drift class.
+ */
+export async function readJsonBody(response: Response, source: string): Promise<unknown> {
+	try {
+		return await response.json();
+	} catch {
+		throw new ToolError('tool_parse_failed', `${source}: response body was not valid JSON`);
+	}
+}

@@ -9,7 +9,7 @@
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
-import { ToolError } from './errors';
+import { ToolError, readJsonBody } from './errors';
 
 const CAG_BASE = 'https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean';
 const OHC_BASE = 'https://www.ncei.noaa.gov/data/oceans/woa/DATA_ANALYSIS/3M_HEAT_CONTENT/DATA/basin/yearly';
@@ -90,7 +90,7 @@ export async function runSurfaceTemperature(input: unknown): Promise<ToolDataRes
 		throw new ToolError('tool_fetch_failed', `NOAA NCEI CAG fetch failed: ${response.status} for ${url}`, response.status);
 	}
 
-	const points = parseCagJson(await response.json());
+	const points = parseCagJson(await readJsonBody(response, 'NOAA NCEI CAG'));
 	return {
 		source: 'NOAA NCEI (NOAAGlobalTemp)',
 		description: `Global land+ocean surface temperature anomaly vs. 1901–2000 average (${scale})`,
@@ -105,6 +105,15 @@ const OHC_BASIN_CONFIG: Record<OhcBasin, { fileCode: string; column: string; lab
 	atlantic: { fileCode: 'a0', column: 'AO', label: 'Atlantic' },
 	indian: { fileCode: 'i0', column: 'IO', label: 'Indian' },
 };
+
+/**
+ * Guard against indexing OHC_BASIN_CONFIG with an arbitrary string:
+ * `config['__proto__']` returns Object.prototype (truthy), which would
+ * slip past a `!config` check. Match the value to a known key first.
+ */
+function isOhcBasin(value: unknown): value is OhcBasin {
+	return value === 'world' || value === 'pacific' || value === 'atlantic' || value === 'indian';
+}
 
 /**
  * Parse a yearly OHC basin .dat file: whitespace-delimited, header row
@@ -148,10 +157,10 @@ export function parseOhcDat(text: string, basinColumn: string): ChartPoint[] {
 export async function runOceanHeatContent(input: unknown): Promise<ToolDataResult> {
 	const { basin, depth } = (input ?? {}) as { basin?: unknown; depth?: unknown };
 
-	const basinConfig = OHC_BASIN_CONFIG[basin as OhcBasin];
-	if (!basinConfig) {
+	if (!isOhcBasin(basin)) {
 		throw new ToolError('tool_input_invalid', 'get_ocean_heat_content: basin must be "world", "pacific", "atlantic", or "indian"');
 	}
+	const basinConfig = OHC_BASIN_CONFIG[basin];
 	if (depth !== '700m' && depth !== '2000m') {
 		throw new ToolError('tool_input_invalid', 'get_ocean_heat_content: depth must be "700m" or "2000m"');
 	}

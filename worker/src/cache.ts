@@ -5,9 +5,12 @@
  * (R9), so any multi-turn request bypasses both read and write.
  * Refusals are never written: cheap to regenerate, and each unique
  * off-topic question would burn one of the 1,000 daily KV writes (R4).
+ * A degraded answer (FALLBACK_ANSWER) is never written either — it's a
+ * transient failure, not an answer (8.2).
  */
 
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
+import { FALLBACK_ANSWER } from './claude';
 import type { WorkerResponse } from './types';
 
 /** Current-state and city questions: data updates daily at most (8.2). */
@@ -67,12 +70,15 @@ export async function cacheGet(kv: KVNamespace, messages: MessageParam[]): Promi
 }
 
 /**
- * Write an envelope to the cache. No-op for multi-turn requests (R9)
- * and for refusals (8.2).
+ * Write an envelope to the cache. No-op for multi-turn requests (R9),
+ * for refusals, and for the degraded FALLBACK_ANSWER (8.2) — the last
+ * one so a transient failure isn't replayed to every caller for up to
+ * the 24h trend TTL.
  */
 export async function cacheSet(kv: KVNamespace, messages: MessageParam[], response: WorkerResponse): Promise<void> {
 	const question = cacheableQuestion(messages);
 	if (!question || response.type === 'refusal') return;
+	if (response.type === 'text' && response.answer === FALLBACK_ANSWER) return;
 	await kv.put(await cacheKey(question), JSON.stringify(response), {
 		expirationTtl: selectTtl(question),
 	});
