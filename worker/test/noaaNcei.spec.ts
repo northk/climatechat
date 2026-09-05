@@ -4,7 +4,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseCagJson, parseOhcDat, nceiToolDefinitions } from '../src/tools/noaaNcei';
+import { parseCagJson, parseOhcDat, nceiToolDefinitions, runOceanHeatContent } from '../src/tools/noaaNcei';
+import { ToolError } from '../src/tools/errors';
 import annualTempRaw from './fixtures/ncei_surface_temp_annual.json?raw';
 import monthlyTempRaw from './fixtures/ncei_surface_temp_monthly.json?raw';
 import ohcFixture from './fixtures/ncei_ohc_700m.dat?raw';
@@ -87,6 +88,21 @@ describe('parseOhcDat - resilience', () => {
 
 	it('throws on an HTML error page', () => {
 		expect(() => parseOhcDat('<html>\n<body>404</body>\n</html>', 'WO')).toThrow(/NOAA NCEI OHC/);
+	});
+});
+
+describe('runOceanHeatContent - basin validation', () => {
+	it('rejects a bogus basin as tool_input_invalid before any fetch', async () => {
+		await expect(runOceanHeatContent({ basin: 'mediterranean', depth: '700m' })).rejects.toThrow(/basin must be/);
+	});
+
+	it('rejects "__proto__" instead of letting it index Object.prototype', async () => {
+		// Plain object indexing would return Object.prototype (truthy) and
+		// slip past a `!config` check — the type guard blocks that.
+		await expect(runOceanHeatContent({ basin: '__proto__', depth: '700m' })).rejects.toMatchObject({
+			toolErrorClass: 'tool_input_invalid',
+		});
+		await expect(runOceanHeatContent({ basin: 'constructor', depth: '700m' })).rejects.toBeInstanceOf(ToolError);
 	});
 });
 

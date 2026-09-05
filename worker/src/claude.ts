@@ -35,8 +35,13 @@ export const MAX_TOKENS = 1536;
  */
 const MAX_ROUNDS = 7;
 
-/** R2 fallback answer when Claude's output can't be turned into an envelope. */
-const FALLBACK_ANSWER = 'Sorry — something went wrong while putting that answer together. Please try asking again.';
+/**
+ * R2 fallback answer when Claude's output can't be turned into an
+ * envelope. Exported so `cache.ts` can refuse to cache a degraded
+ * response by identity (8.2) — a transient failure must not be served
+ * from KV for up to the TTL.
+ */
+export const FALLBACK_ANSWER = 'Sorry — something went wrong while putting that answer together. Please try asking again.';
 
 export type MessageCreator = (params: MessageCreateParamsNonStreaming) => Promise<Message>;
 
@@ -84,27 +89,31 @@ export async function askClaude(messages: MessageParam[], createMessage: Message
 
 		if (response.stop_reason === 'tool_use') {
 			conversation.push({ role: 'assistant', content: response.content });
-			const results: ToolResultBlockParam[] = [];
-			for (const block of response.content) {
-				if (block.type !== 'tool_use') continue;
-				try {
-					const data = await runTool(block.name, block.input);
-					toolResults.set(block.id, data);
-					results.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(data) });
-				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
-					// The class is carried on the ToolError from the throw site
-					// (tools/errors.ts); anything else escaping a handler is a bug.
-					const errorClass: ErrorClass = error instanceof ToolError ? error.toolErrorClass : 'unhandled';
-					const upstreamStatus = error instanceof ToolError ? error.upstreamStatus : undefined;
-					logError(errorClass, { tool: block.name, upstreamStatus, message });
-					// is_error tool_result: Claude sees the failure and answers
-					// per Section 7 ("say so plainly") instead of crashing the request
-					results.push({ type: 'tool_result', tool_use_id: block.id, content: message, is_error: true });
-				}
-			}
-			// All results for a round go in ONE user message, or Claude stops
-			// making parallel calls
+			const toolUses = response.content.filter((block): block is Extract<typeof block, { type: 'tool_use' }> => block.type === 'tool_use');
+			// Run a round's tool calls concurrently — they're independent, and
+			// all results go back in ONE tool_result message keyed by
+			// tool_use_id regardless of order, so serial execution would just
+			// sum the upstream latencies (R4). Each call has its own try/catch,
+			// so Promise.all never rejects; results stay in call order.
+			const results: ToolResultBlockParam[] = await Promise.all(
+				toolUses.map(async (block): Promise<ToolResultBlockParam> => {
+					try {
+						const data = await runTool(block.name, block.input);
+						toolResults.set(block.id, data);
+						return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(data) };
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						// The class is carried on the ToolError from the throw site
+						// (tools/errors.ts); anything else escaping a handler is a bug.
+						const errorClass: ErrorClass = error instanceof ToolError ? error.toolErrorClass : 'unhandled';
+						const upstreamStatus = error instanceof ToolError ? error.upstreamStatus : undefined;
+						logError(errorClass, { tool: block.name, upstreamStatus, message });
+						// is_error tool_result: Claude sees the failure and answers
+						// per Section 7 ("say so plainly") instead of crashing the request
+						return { type: 'tool_result', tool_use_id: block.id, content: message, is_error: true };
+					}
+				}),
+			);
 			conversation.push({ role: 'user', content: results });
 			continue;
 		}
