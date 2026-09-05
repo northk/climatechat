@@ -8,7 +8,7 @@
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
-import { ToolError } from './errors';
+import { ToolError, fetchOk } from './errors';
 
 const GML_BASE = 'https://gml.noaa.gov/webdata/ccgg/trends';
 
@@ -99,12 +99,7 @@ export async function runGmlTool(toolName: string, input: unknown): Promise<Tool
 		throw new ToolError('tool_input_invalid', `${toolName}: granularity must be "monthly" or "annual"`);
 	}
 
-	const url = gmlUrl(gas.slug, granularity);
-	const response = await fetch(url);
-	if (!response.ok) {
-		throw new ToolError('tool_fetch_failed', `NOAA GML fetch failed: ${response.status} for ${url}`, response.status);
-	}
-
+	const response = await fetchOk(gmlUrl(gas.slug, granularity), 'NOAA GML');
 	const points = parseGmlCsv(await response.text(), granularity);
 	return {
 		source: 'NOAA GML',
