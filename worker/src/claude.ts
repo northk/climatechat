@@ -192,8 +192,11 @@ export function parseEnvelope(text: string, toolResults: Map<string, ToolDataRes
 					logError('chart_injection_mismatch', {
 						message: `sourceToolCallId ${dataset.sourceToolCallId} has no matching tool_result`,
 					});
-					// R2 fallback: the explanation is still a sourced answer
-					return { type: 'text', answer: (chart.explanation as string) || FALLBACK_ANSWER };
+					// A mismatched ID means Claude's linkage to real tool data broke in
+					// this response, so its prose explanation can't be trusted either
+					// (Section 7 rule 1) — degrade to the generic fallback, not the
+					// explanation text, so nothing ungrounded gets served or cached.
+					return { type: 'text', answer: FALLBACK_ANSWER };
 				}
 				datasets.push({ label: dataset.label, data: result.points });
 			}
