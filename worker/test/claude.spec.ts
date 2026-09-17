@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { Message, MessageCreateParamsNonStreaming } from '@anthropic-ai/sdk/resources/messages';
-import { askClaude, parseEnvelope, MODEL, MAX_TOKENS } from '../src/claude';
+import { askClaude, parseEnvelope, MODEL, MAX_TOKENS, FALLBACK_ANSWER } from '../src/claude';
 import type { ToolDataResult } from '../src/types';
 
 const usage = { input_tokens: 100, output_tokens: 50 };
@@ -289,7 +289,7 @@ describe('parseEnvelope - malformed output (R2)', () => {
 		expect((result as { answer: string }).answer).toMatch(/something went wrong/);
 	});
 
-	it('degrades a chart with an unmatched sourceToolCallId to the explanation text (step 17 mismatch case)', () => {
+	it('degrades a chart with an unmatched sourceToolCallId to the generic fallback, not the explanation text (step 17 mismatch case)', () => {
 		const results = new Map([['toolu_real', sampleResult]]);
 		const chart = JSON.stringify({
 			type: 'chart',
@@ -301,7 +301,7 @@ describe('parseEnvelope - malformed output (R2)', () => {
 			explanation: 'CO2 has risen since 1979 (NOAA GML).',
 		});
 		const result = parseEnvelope(chart, results);
-		expect(result).toEqual({ type: 'text', answer: 'CO2 has risen since 1979 (NOAA GML).' });
+		expect(result).toEqual({ type: 'text', answer: FALLBACK_ANSWER });
 	});
 
 	it('injects data for a valid chart with multiple datasets', () => {
