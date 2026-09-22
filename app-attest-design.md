@@ -714,10 +714,20 @@ cryptographic is native `crypto.subtle`. Down from Codex's proposed four package
 scaffolding. Keep `test/fixtures/apple_appattest_vector.json`; it becomes the real
 enrollment fixture.
 
-**Delete:** `src/spikeCounter.ts` and its re-export in `src/index.ts`, the
-`SPIKE_COUNTER` binding and `spike-v1` migration in `wrangler.jsonc`, and
-`spike-appattest.spec.ts` / `spike-x509.spec.ts` / `spike-do-atomicity.spec.ts` (their
-findings are captured in this document).
+**Delete:** `src/spikeCounter.ts` and its re-export in `src/index.ts`,
+`test/spike-env.d.ts`, the `SPIKE_COUNTER` entry in `vitest.config.mts`, and
+`spike-appattest.spec.ts` / `spike-x509.spec.ts` / `spike-do-atomicity.spec.ts` /
+`spike-alarm.spec.ts` (their findings are captured in this document).
+
+**Note `wrangler.jsonc` is deliberately untouched.** The spike's Durable Object binding
+lives in `vitest.config.mts` under `miniflare.durableObjects`, not in the deployable
+config. A DO declared in `wrangler.jsonc` requires a `migrations` entry, and migrations
+are append-only history: the first real `wrangler deploy` (plan step 40) would register
+the class in production, after which removing it needs a further `deleted_classes`
+migration, and deleting the code without that makes the deploy fail outright. Miniflare
+simulates Durable Objects locally with no migration concept, so the tests need nothing
+in the deployable config. **Scaffolding must never leave a permanent mark on production
+migration history** — apply the same rule to any future spike that wants a DO.
 
 **Drop from devDependencies:** `cbor2`, `@peculiar/x509`, `reflect-metadata`. Promote
 `cbor-x`, `@peculiar/asn1-schema` and `@peculiar/asn1-x509` from devDependencies to

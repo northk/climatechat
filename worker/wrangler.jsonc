@@ -8,20 +8,6 @@
 			"id": "452fe7c804e94b35a1f0bb5f14caa245",
 		},
 	],
-	"durable_objects": {
-		"bindings": [
-			{
-				"name": "SPIKE_COUNTER",
-				"class_name": "SpikeCounter",
-			},
-		],
-	},
-	"migrations": [
-		{
-			"tag": "spike-v1",
-			"new_sqlite_classes": ["SpikeCounter"],
-		},
-	],
 	"observability": {
 		"enabled": true,
 	},
