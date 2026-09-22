@@ -20,7 +20,7 @@
 | **Sea ice data** | NSIDC (`noaadata.apps.nsidc.org`) | Arctic sea ice extent — distributed jointly with NOAA under the Sea Ice Index, not part of GML |
 | **City-level data source** | Open-Meteo | City-level historical weather; free tier for non-commercial use only (see R8) |
 | **Distribution** | TestFlight | Requires Apple Developer account ($99/yr); no App Review needed for internal testing |
-| **Xcode version** | Xcode 26.3 | Installed version; targets iOS 16+ deployment |
+| **Xcode version** | Xcode 27.0 | Installed version (build 27A266a, confirmed 2026-09-21); targets iOS 16+ deployment |
 | **Worker tests** | Vitest + `@cloudflare/vitest-pool-workers` | Runs tests inside the actual Workers runtime with local KV simulation, so rate limiting and caching are tested realistically rather than against mocks |
 | **iOS tests** | XCTest unit target | Runs headless via Xcode (Cmd+U) or `xcodebuild test -scheme ClimateChat -destination 'platform=iOS Simulator,name=iPhone 16'` from the terminal, so tests are runnable from Claude Code without the Xcode GUI |
 | **Worker lint/format** | TypeScript `"strict": true` + ESLint (typescript-eslint recommended config) + Prettier | Strict mode makes the `types.ts` envelope-type split (Section 4) load-bearing; ESLint's `no-floating-promises` catches forgotten `await`s on KV writes and fetches — the most likely silent bug in this async-heavy Worker; Prettier ends formatting drift between coding sessions |
