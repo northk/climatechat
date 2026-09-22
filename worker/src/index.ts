@@ -20,6 +20,21 @@ import { cacheGet, cacheSet } from './cache';
 import { checkAndIncrement, DAILY_LIMIT } from './rateLimit';
 import type { WorkerResponse } from './types';
 
+/**
+ * Input-size limits (plan steps 47/49, pulled forward from Phase 6 —
+ * see Codex review finding on unbounded input). The client (once built
+ * in Phase 4) is expected to enforce these too, but the Worker cannot
+ * trust that: the shared secret is extractable from a compiled app
+ * (R10), so a direct caller could otherwise submit arbitrarily large
+ * messages or history and either blow up the Anthropic bill / context
+ * window, or burn a rate-limit slot on a request that was always going
+ * to fail.
+ */
+export const MAX_USER_MESSAGE_LENGTH = 500; // plan Section 8.4 — the actual typed question
+export const MAX_MESSAGE_LENGTH = 8000; // generous ceiling for any message (bounds a forged/oversized assistant turn too)
+export const MAX_MESSAGES = 21; // plan step 49: 10 history exchanges + the new question
+export const MAX_BODY_LENGTH = 120_000; // headroom over MAX_MESSAGES worth of MAX_MESSAGE_LENGTH content plus JSON overhead
+
 // SPIKE scaffolding — Durable Object classes must be exported from the entry
 // module. Remove along with src/spikeCounter.ts when the spike is torn down.
 export { SpikeCounter } from './spikeCounter';
@@ -48,11 +63,13 @@ export function verifyClient(request: Request, env: Env): boolean {
 /** Validate the request body into a Claude-ready message history. */
 export function parseMessages(body: unknown): MessageParam[] | null {
 	const messages = (body as { messages?: unknown } | null)?.messages;
-	if (!Array.isArray(messages) || messages.length === 0) return null;
+	if (!Array.isArray(messages) || messages.length === 0 || messages.length > MAX_MESSAGES) return null;
 	for (const message of messages) {
 		const { role, content } = (message ?? {}) as { role?: unknown; content?: unknown };
 		if (role !== 'user' && role !== 'assistant') return null;
 		if (typeof content !== 'string' || content.trim().length === 0) return null;
+		if (content.length > MAX_MESSAGE_LENGTH) return null;
+		if (role === 'user' && content.length > MAX_USER_MESSAGE_LENGTH) return null;
 	}
 	// The API merges consecutive same-role turns, so alternation isn't
 	// required — but the first turn must be `user` and so must the last
@@ -77,10 +94,17 @@ export async function handleAsk(request: Request, env: Env, ask: AskFn): Promise
 		return Response.json({ error: 'Unauthorized' }, { status: 401 });
 	}
 
-	// 2. Body validation
+	// 2. Body validation. Read as text first so oversized bodies are
+	// rejected against the actual bytes received, not a client-supplied
+	// (and spoofable) Content-Length header, and before the CPU cost of
+	// JSON.parse on a huge payload.
+	const rawBody = await request.text();
+	if (rawBody.length > MAX_BODY_LENGTH) {
+		return Response.json({ error: `Request body too large (max ${MAX_BODY_LENGTH} characters)` }, { status: 413 });
+	}
 	let body: unknown;
 	try {
-		body = await request.json();
+		body = JSON.parse(rawBody);
 	} catch {
 		return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
 	}

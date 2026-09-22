@@ -8,7 +8,15 @@
 import { env, SELF } from 'cloudflare:test';
 import { describe, it, expect, vi } from 'vitest';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
-import { handleAsk, parseMessages, verifyClient } from '../src/index';
+import {
+	handleAsk,
+	parseMessages,
+	verifyClient,
+	MAX_BODY_LENGTH,
+	MAX_MESSAGE_LENGTH,
+	MAX_MESSAGES,
+	MAX_USER_MESSAGE_LENGTH,
+} from '../src/index';
 import { cacheGet, cacheSet } from '../src/cache';
 import { DAILY_LIMIT } from '../src/rateLimit';
 import type { WorkerResponse } from '../src/types';
@@ -111,6 +119,41 @@ describe('parseMessages', () => {
 			}),
 		).toBeNull();
 	});
+
+	it('rejects a user message over 500 characters but allows a longer assistant turn (plan step 47 / 8.4)', () => {
+		const tooLongUser = [{ role: 'user', content: 'x'.repeat(MAX_USER_MESSAGE_LENGTH + 1) }];
+		expect(parseMessages({ messages: tooLongUser })).toBeNull();
+
+		const okUser = [{ role: 'user', content: 'x'.repeat(MAX_USER_MESSAGE_LENGTH) }];
+		expect(parseMessages({ messages: okUser })).toEqual(okUser);
+
+		// A prior assistant answer can legitimately exceed 500 chars — only
+		// the newly typed user input is capped that tightly
+		const longAssistantTurn = [
+			{ role: 'user', content: 'Explain ocean heat content' },
+			{ role: 'assistant', content: 'y'.repeat(MAX_USER_MESSAGE_LENGTH + 1) },
+			{ role: 'user', content: 'Thanks' },
+		];
+		expect(parseMessages({ messages: longAssistantTurn })).toEqual(longAssistantTurn);
+	});
+
+	it('rejects any message over the hard MAX_MESSAGE_LENGTH ceiling regardless of role', () => {
+		const messages = [
+			{ role: 'user', content: 'q' },
+			{ role: 'assistant', content: 'z'.repeat(MAX_MESSAGE_LENGTH + 1) },
+			{ role: 'user', content: 'q2' },
+		];
+		expect(parseMessages({ messages })).toBeNull();
+	});
+
+	it('rejects a history longer than MAX_MESSAGES (plan step 49, enforced Worker-side since the client cannot be trusted)', () => {
+		const messages = Array.from({ length: MAX_MESSAGES + 1 }, (_, i) => ({
+			role: i % 2 === 0 ? 'user' : 'assistant',
+			content: `msg ${i}`,
+		}));
+		messages[messages.length - 1] = { role: 'user', content: 'final question' };
+		expect(parseMessages({ messages })).toBeNull();
+	});
 });
 
 describe('handleAsk pipeline ordering (stubbed Claude)', () => {
@@ -118,6 +161,14 @@ describe('handleAsk pipeline ordering (stubbed Claude)', () => {
 		const ask = stubAsk();
 		expect((await handleAsk(askRequest('{not json'), env, ask)).status).toBe(400);
 		expect((await handleAsk(askRequest({ messages: [] }), env, ask)).status).toBe(400);
+		expect(ask).not.toHaveBeenCalled();
+	});
+
+	it('rejects an oversized body with 413 before parsing or calling Claude (Codex review: denial-of-wallet via huge input)', async () => {
+		const ask = stubAsk();
+		const oversized = '{"messages":[{"role":"user","content":"' + 'a'.repeat(MAX_BODY_LENGTH) + '"}]}';
+		const response = await handleAsk(askRequest(oversized), env, ask);
+		expect(response.status).toBe(413);
 		expect(ask).not.toHaveBeenCalled();
 	});
 
