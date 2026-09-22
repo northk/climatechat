@@ -2,6 +2,8 @@
 
 Climate Q&A iOS app (SwiftUI) + Cloudflare Worker backend (TypeScript).
 Full architecture, build sequence, and risk register: see project-plan.md.
+Client authentication (Apple App Attest) — design, decisions and verified
+spike findings: see app-attest-design.md.
 
 ## Non-negotiable rules
 - NEVER put ANTHROPIC_API_KEY in the iOS app, Config.swift, or any committed file (plan R3)
@@ -12,6 +14,8 @@ Full architecture, build sequence, and risk register: see project-plan.md.
 - UI work must follow the UI Design Spec (plan Section 5); if it's still TBD, stop and ask
 - Never set temperature/top_p/top_k in Anthropic API calls — Sonnet 5 returns 400 on non-default values; steer output through the system prompt
 - The anti-hallucination system prompt rules in project-plan.md Section 7 are non-negotiable and must be implemented verbatim in worker/src/prompts.ts — never paraphrase, soften, "streamline", or partially implement them during any refactor. If a change to prompts.ts seems needed, update Section 7 of the plan first, then mirror it in code.
+- Before writing or changing any App Attest / client-auth code, read app-attest-design.md §7 (pitfalls) and §12 (spike results). Several are silent-failure traps confirmed by measurement, not theory — e.g. a Durable Object does NOT make a read-modify-write atomic (12/12 concurrent replays got through), and Apple's own published validation vector contradicts Apple's own prose. Do not re-derive these from first principles; do not re-litigate the App Attest decision itself (R10 records it as decided).
+- Durable Objects used by throwaway/spike code must be declared in vitest.config.mts (miniflare.durableObjects), never in wrangler.jsonc — a DO there needs a `migrations` entry, which is append-only history applied at the first real deploy and removable only via a further `deleted_classes` migration.
 
 ## Commands
 - Worker tests: cd worker && npx vitest run
