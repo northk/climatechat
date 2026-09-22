@@ -20,6 +20,10 @@ import { cacheGet, cacheSet } from './cache';
 import { checkAndIncrement, DAILY_LIMIT } from './rateLimit';
 import type { WorkerResponse } from './types';
 
+// SPIKE scaffolding — Durable Object classes must be exported from the entry
+// module. Remove along with src/spikeCounter.ts when the spike is torn down.
+export { SpikeCounter } from './spikeCounter';
+
 /** Constant-time string compare — no first-mismatch timing oracle on the secret. */
 function timingSafeEqual(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
