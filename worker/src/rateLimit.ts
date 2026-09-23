@@ -4,6 +4,15 @@
  * new day means a new key. Trivially testable by injecting a date;
  * no elapsed-time simulation needed. The 429 response itself is the
  * /ask handler's job (step 24); this module only decides.
+ *
+ * SUPERSEDED-IN-PLAN (2026-09-23, plan 8.3): once App Attest ships, the
+ * `/ask` quota is keyed by App Attest `keyId` and lives in the per-device
+ * Durable Object, not here — which also removes a KV write per request
+ * (R4) and makes the check atomic, closing the race noted below. This
+ * module stays live for the transition window while `X-App-Secret` is
+ * still the auth mechanism, then retires with it. Enrollment throttling
+ * stays per-IP permanently (pre-auth; see app-attest-design.md §5a).
+ * Do not invest in extending this file — extend the DO counter instead.
  */
 
 /** Free-tier questions per IP per day (Section 8.3). */
