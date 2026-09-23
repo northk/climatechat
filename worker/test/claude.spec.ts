@@ -362,7 +362,7 @@ describe('askClaude - wall-clock budget', () => {
 			textResponse('{"type":"text","answer":"ok"}'),
 		]);
 		const deadline = new AbortController().signal;
-		await askClaude(user('CO2?'), create, deadline);
+		await askClaude(user('CO2?'), create, { deadline });
 		expect(create).toHaveBeenCalledTimes(2);
 		for (const call of create.mock.calls) expect((call as unknown[])[1]).toEqual({ signal: deadline });
 	});
@@ -376,7 +376,7 @@ describe('askClaude - wall-clock budget', () => {
 					signal.addEventListener('abort', () => reject(new Error('Request was aborted.')));
 				}),
 		);
-		const done = askClaude(user('CO2?'), create, controller.signal);
+		const done = askClaude(user('CO2?'), create, { deadline: controller.signal });
 		controller.abort();
 		expect(await done).toEqual({ type: 'text', answer: FALLBACK_ANSWER });
 		const logged = JSON.parse(errorSpy.mock.calls[0][0] as string) as Record<string, unknown>;
@@ -385,6 +385,6 @@ describe('askClaude - wall-clock budget', () => {
 
 	it('still propagates a non-timeout API error to the 500 path', async () => {
 		const create = vi.fn(() => Promise.reject(new Error('overloaded')));
-		await expect(askClaude(user('CO2?'), create, new AbortController().signal)).rejects.toThrow('overloaded');
+		await expect(askClaude(user('CO2?'), create, { deadline: new AbortController().signal })).rejects.toThrow('overloaded');
 	});
 });

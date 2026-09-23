@@ -21,7 +21,8 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartDataset, ClaudeChartDataset, ToolDataResult, WorkerResponse } from './types';
 import { SYSTEM_PROMPT } from './prompts';
-import { ToolError, type ToolErrorClass } from './tools/errors';
+import { ToolError } from './tools/errors';
+import { logError, type ErrorClass } from './log';
 import { allToolDefinitions, runTool } from './tools/registry';
 
 export const MODEL = 'claude-sonnet-5';
@@ -55,16 +56,6 @@ export const FALLBACK_ANSWER = 'Sorry — something went wrong while putting tha
 
 export type MessageCreator = (params: MessageCreateParamsNonStreaming, options: { signal: AbortSignal }) => Promise<Message>;
 
-type ErrorClass = ToolErrorClass | 'claude_malformed_json' | 'chart_injection_mismatch' | 'claude_timeout' | 'unhandled';
-
-/**
- * Structured error logging (plan step 16): lands in Workers Logs via
- * the observability binding. Never include question text or IPs.
- */
-export function logError(errorClass: ErrorClass, fields: { tool?: string; upstreamStatus?: number; message: string }): void {
-	console.error(JSON.stringify({ class: errorClass, ...fields }));
-}
-
 /** Put a cache_control breakpoint on the last content block of the last message. */
 function withCacheBreakpoint(messages: MessageParam[]): MessageParam[] {
 	if (messages.length === 0) return messages;
@@ -80,12 +71,13 @@ function withCacheBreakpoint(messages: MessageParam[]): MessageParam[] {
  * Run the full tool-use loop for a conversation and return the public
  * response envelope. `messages` is the incoming user/assistant history
  * (iOS sends plain text turns). `deadline` is injectable so tests can
- * abort it; production uses LOOP_BUDGET_MS.
+ * abort it; production uses LOOP_BUDGET_MS. `kv` is handed to the tools
+ * for the Open-Meteo city series cache (R12).
  */
 export async function askClaude(
 	messages: MessageParam[],
 	createMessage: MessageCreator,
-	deadline: AbortSignal = AbortSignal.timeout(LOOP_BUDGET_MS),
+	{ deadline = AbortSignal.timeout(LOOP_BUDGET_MS), kv }: { deadline?: AbortSignal; kv?: KVNamespace } = {},
 ): Promise<WorkerResponse> {
 	const conversation: MessageParam[] = [...messages];
 	const toolResults = new Map<string, ToolDataResult>();
@@ -129,7 +121,7 @@ export async function askClaude(
 			const results: ToolResultBlockParam[] = await Promise.all(
 				toolUses.map(async (block): Promise<ToolResultBlockParam> => {
 					try {
-						const data = await runTool(block.name, block.input);
+						const data = await runTool(block.name, block.input, kv);
 						toolResults.set(block.id, data);
 						return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(data) };
 					} catch (error) {

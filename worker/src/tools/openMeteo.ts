@@ -9,11 +9,27 @@
  * tool_result; the span caps below keep every response bounded instead
  * of forcing everything to annual. Cite as "Open-Meteo". Free tier is
  * non-commercial only (R8).
+ *
+ * Annual and monthly series are served from a per-city KV cache (R12).
+ * Open-Meteo bills every 2 weeks of data as one API call, so a default
+ * annual query (1960 on) costs ~1,720 of the free tier's 10,000 daily
+ * calls. Each city's record is cached in two KV segments, each
+ * aggregated to both series and sliced for every later request about that
+ * city, whatever the question wording:
+ *   - history: 1940 through the end of the year before last. Past data
+ *     never changes, so it's fetched once per city per year (~2,190 calls).
+ *   - recent: last year through today, refreshed daily (~52 calls).
+ * Last year stays in `recent` because the archive lags real time by a few
+ * days and its newest data is preliminary, revised for a couple of months
+ * afterwards. Freezing late December into `history` in early January
+ * would pin incomplete or superseded values for a year.
+ * Weekly ranges are small (≤3 years ≈ 78 calls) and stay uncached.
  */
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
 import { ToolError, fetchJson } from './errors';
+import { logError } from '../log';
 
 const GEOCODE_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const ARCHIVE_URL = 'https://archive-api.open-meteo.com/v1/archive';
@@ -22,6 +38,20 @@ const ARCHIVE_URL = 'https://archive-api.open-meteo.com/v1/archive';
 const ARCHIVE_FIRST_YEAR = 1940;
 /** Default range start for annual queries. */
 const DEFAULT_ANNUAL_START = 1960;
+
+/**
+ * `recent` segment lifetime: bounds how stale the newest complete month
+ * can get, at ~52 calls per active city per day.
+ */
+export const RECENT_TTL_SECONDS = 24 * 60 * 60;
+/**
+ * `history` segment lifetime. Validity comes from the year in the key (a
+ * new year means a new key, like rateLimit.ts's date-keyed counters);
+ * this TTL only garbage-collects entries for cities nobody asks about.
+ */
+export const HISTORY_TTL_SECONDS = 400 * 24 * 60 * 60;
+/** Bump the version if the cached shape or aggregation ever changes. */
+const CITY_CACHE_PREFIX = 'om:v2:';
 
 export type CityGranularity = 'annual' | 'monthly' | 'weekly';
 
@@ -164,11 +194,163 @@ export function aggregateArchive(body: unknown, granularity: CityGranularity): C
 	return points.sort((a, b) => a.x - b.x);
 }
 
+/** A city's full annual and monthly series, as cached (R12). */
+export interface CitySeries {
+	annual: ChartPoint[];
+	monthly: ChartPoint[];
+}
+
+/**
+ * Cache keys from the geocoded coordinates, not the query text:
+ * "Portland", "portland" and "Portland, Oregon" geocode to the same point
+ * and share entries. 2 decimals ≈ 1 km, finer than the archive's grid.
+ * Both keys carry the current year, so the segment boundary moves at New
+ * Year without ever pairing a new `history` with an old `recent` — they
+ * would overlap on a year and duplicate its points.
+ */
+export function cityCacheKeys(city: GeocodedCity, currentYear: number): { history: string; recent: string } {
+	const coords = `${city.latitude.toFixed(2)},${city.longitude.toFixed(2)}`;
+	return {
+		history: `${CITY_CACHE_PREFIX}hist:${currentYear}:${coords}`,
+		recent: `${CITY_CACHE_PREFIX}recent:${currentYear}:${coords}`,
+	};
+}
+
+function archiveUrl(city: GeocodedCity, startDate: string, endDate: string): string {
+	return (
+		`${ARCHIVE_URL}?latitude=${city.latitude}&longitude=${city.longitude}` +
+		`&start_date=${startDate}&end_date=${endDate}` +
+		`&daily=temperature_2m_mean&timezone=auto`
+	);
+}
+
+type Segment = 'history' | 'recent';
+
+const CITY_TOOL_NAME = 'get_city_temperature_history';
+
+/**
+ * Log a cache failure without failing the answer. Silent swallowing would
+ * hide the likeliest cause, KV's free-tier 1,000 writes/day (R4) running
+ * out: every city question would quietly refetch and then surface as
+ * Open-Meteo 429s, pointing at the wrong culprit. The key is deliberately
+ * left out — it carries the city's coordinates (step 16's logging rule).
+ */
+function logCacheFailure(segment: Segment, what: string, error?: unknown): void {
+	const cause = error === undefined ? '' : ` (${error instanceof Error ? error.name : 'unknown'})`;
+	logError('kv_cache_failed', { tool: CITY_TOOL_NAME, message: `${segment} segment ${what}${cause}` });
+}
+
+/** A cached entry, or null on a miss, a KV read error, or a corrupt value (the last two logged). */
+async function readCachedSeries(kv: KVNamespace, key: string, segment: Segment): Promise<CitySeries | null> {
+	let stored: string | null;
+	try {
+		stored = await kv.get(key);
+	} catch (error) {
+		logCacheFailure(segment, 'read failed', error);
+		return null;
+	}
+	if (!stored) return null;
+	let parsed: Partial<CitySeries> | null;
+	try {
+		parsed = JSON.parse(stored) as Partial<CitySeries> | null;
+	} catch {
+		parsed = null;
+	}
+	if (Array.isArray(parsed?.annual) && Array.isArray(parsed?.monthly)) return parsed as CitySeries;
+	logCacheFailure(segment, 'entry corrupt, refetching');
+	return null;
+}
+
+/**
+ * One cache segment: from KV when cached, else one archive fetch for the
+ * date range, aggregated both ways and written back.
+ */
+async function getSegment(
+	city: GeocodedCity,
+	kv: KVNamespace | undefined,
+	segment: Segment,
+	key: string,
+	startDate: string,
+	endDate: string,
+	ttlSeconds: number,
+): Promise<CitySeries> {
+	if (kv) {
+		const cached = await readCachedSeries(kv, key, segment);
+		if (cached) return cached;
+	}
+	const body = await fetchJson(archiveUrl(city, startDate, endDate), 'Open-Meteo archive');
+	const series: CitySeries = { annual: aggregateArchive(body, 'annual'), monthly: aggregateArchive(body, 'monthly') };
+	if (kv) {
+		try {
+			await kv.put(key, JSON.stringify(series), { expirationTtl: ttlSeconds });
+		} catch (error) {
+			// The answer itself is fine — a failed write only costs the next
+			// request a refetch. Logged, not rethrown (see logCacheFailure).
+			logCacheFailure(segment, 'write failed', error);
+		}
+	}
+	return series;
+}
+
+/**
+ * The city's full annual + monthly series, 1940 → today: `history` +
+ * `recent` concatenated. The split falls on a year boundary, so no annual
+ * or monthly bucket spans it and concatenating is exact. `kv` is optional
+ * so unit tests can exercise the tool without a binding; production
+ * always passes it (index.ts → askClaude → runTool).
+ */
+async function getCitySeries(city: GeocodedCity, kv: KVNamespace | undefined): Promise<CitySeries> {
+	const currentYear = new Date().getUTCFullYear();
+	const keys = cityCacheKeys(city, currentYear);
+	// Clamp to today — the archive API rejects future dates
+	const today = new Date().toISOString().slice(0, 10);
+	// allSettled, not all: if one segment fails, Promise.all would reject
+	// while the other's fetch and KV write are still running, leaving work
+	// in flight after the tool has already failed. Wait for both, then
+	// surface the first failure — logging the second if both failed.
+	const [history, recent] = await Promise.allSettled([
+		getSegment(city, kv, 'history', keys.history, `${ARCHIVE_FIRST_YEAR}-01-01`, `${currentYear - 2}-12-31`, HISTORY_TTL_SECONDS),
+		getSegment(city, kv, 'recent', keys.recent, `${currentYear - 1}-01-01`, today, RECENT_TTL_SECONDS),
+	]);
+	if (history.status === 'rejected') {
+		if (recent.status === 'rejected') logDroppedFailure(recent.reason);
+		throw history.reason;
+	}
+	if (recent.status === 'rejected') throw recent.reason;
+	return {
+		annual: [...history.value.annual, ...recent.value.annual],
+		monthly: [...history.value.monthly, ...recent.value.monthly],
+	};
+}
+
+/**
+ * Log the `recent` segment's failure when `history` failed too. Only one
+ * error can be thrown, and claude.ts logs that one; without this the
+ * second would vanish, and it can have a different class (e.g. history
+ * hits a 429 while recent's format drifted — `tool_parse_failed` is the
+ * drift signal). Same class mapping as claude.ts's tool-error logging.
+ */
+function logDroppedFailure(error: unknown): void {
+	logError(error instanceof ToolError ? error.toolErrorClass : 'unhandled', {
+		tool: CITY_TOOL_NAME,
+		upstreamStatus: error instanceof ToolError ? error.upstreamStatus : undefined,
+		message: `recent segment also failed: ${error instanceof Error ? error.message : String(error)}`,
+	});
+}
+
+/**
+ * Points whose year falls in [start, end]. Monthly x values are
+ * fractional (month-centered), so compare on the integer year.
+ */
+export function sliceSeries(points: ChartPoint[], start: number, end: number): ChartPoint[] {
+	return points.filter((point) => Math.floor(point.x) >= start && Math.floor(point.x) <= end);
+}
+
 function isCityGranularity(value: unknown): value is CityGranularity {
 	return value === 'annual' || value === 'monthly' || value === 'weekly';
 }
 
-export async function runCityTemperatureHistory(input: unknown): Promise<ToolDataResult> {
+export async function runCityTemperatureHistory(input: unknown, kv?: KVNamespace): Promise<ToolDataResult> {
 	const {
 		city,
 		granularity: rawGranularity,
@@ -223,15 +405,22 @@ export async function runCityTemperatureHistory(input: unknown): Promise<ToolDat
 	const geocodeUrl = `${GEOCODE_URL}?name=${encodeURIComponent(city.trim())}&count=1`;
 	const geocoded = parseGeocodeJson(await fetchJson(geocodeUrl, 'Open-Meteo geocoding'), city.trim());
 
-	// Clamp to today when the range includes the current year — the archive
-	// API rejects future dates
-	const today = new Date().toISOString().slice(0, 10);
-	const endDate = end === currentYear ? today : `${end}-12-31`;
-	const archiveUrl =
-		`${ARCHIVE_URL}?latitude=${geocoded.latitude}&longitude=${geocoded.longitude}` +
-		`&start_date=${start}-01-01&end_date=${endDate}` +
-		`&daily=temperature_2m_mean&timezone=auto`;
-	const points = aggregateArchive(await fetchJson(archiveUrl, 'Open-Meteo archive'), granularity);
+	let points: ChartPoint[];
+	if (granularity === 'weekly') {
+		// Clamp to today when the range includes the current year — the
+		// archive API rejects future dates
+		const today = new Date().toISOString().slice(0, 10);
+		const endDate = end === currentYear ? today : `${end}-12-31`;
+		points = aggregateArchive(await fetchJson(archiveUrl(geocoded, `${start}-01-01`, endDate), 'Open-Meteo archive'), 'weekly');
+	} else {
+		points = sliceSeries((await getCitySeries(geocoded, kv))[granularity], start, end);
+		if (points.length === 0) {
+			// Same outcome as the uncached path, where aggregateArchive throws
+			// on a range with no complete period (e.g. monthly, current year,
+			// in the first days of January)
+			throw new ToolError('tool_parse_failed', `Open-Meteo archive: no complete ${granularity} periods in the requested range`);
+		}
+	}
 
 	const place = geocoded.countryCode ? `${geocoded.name}, ${geocoded.countryCode}` : geocoded.name;
 	return {
