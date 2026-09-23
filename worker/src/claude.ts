@@ -80,12 +80,13 @@ function withCacheBreakpoint(messages: MessageParam[]): MessageParam[] {
  * Run the full tool-use loop for a conversation and return the public
  * response envelope. `messages` is the incoming user/assistant history
  * (iOS sends plain text turns). `deadline` is injectable so tests can
- * abort it; production uses LOOP_BUDGET_MS.
+ * abort it; production uses LOOP_BUDGET_MS. `kv` is handed to the tools
+ * for the Open-Meteo city series cache (R12).
  */
 export async function askClaude(
 	messages: MessageParam[],
 	createMessage: MessageCreator,
-	deadline: AbortSignal = AbortSignal.timeout(LOOP_BUDGET_MS),
+	{ deadline = AbortSignal.timeout(LOOP_BUDGET_MS), kv }: { deadline?: AbortSignal; kv?: KVNamespace } = {},
 ): Promise<WorkerResponse> {
 	const conversation: MessageParam[] = [...messages];
 	const toolResults = new Map<string, ToolDataResult>();
@@ -129,7 +130,7 @@ export async function askClaude(
 			const results: ToolResultBlockParam[] = await Promise.all(
 				toolUses.map(async (block): Promise<ToolResultBlockParam> => {
 					try {
-						const data = await runTool(block.name, block.input);
+						const data = await runTool(block.name, block.input, kv);
 						toolResults.set(block.id, data);
 						return { type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(data) };
 					} catch (error) {

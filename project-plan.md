@@ -266,6 +266,7 @@ Every tool handler is also paired with fixture-based parser tests, written once 
       - cite as **"NSIDC/NOAA Sea Ice Index"**
 12. Implement `openMeteo.ts` — city-level historical weather:
     - `get_city_temperature_history(city, granularity: "annual" | "monthly" | "weekly", start_year?, end_year?)` — average temperature for a named city (geocoded via Open-Meteo's geocoding endpoint, then the archive API). The Worker fetches daily means and aggregates to the requested granularity — a raw multi-decade daily series is too large for a tool_result. Span caps keep responses bounded instead of forcing everything to annual: weekly ≤ 3-year span (~157 points), monthly ≤ 30 years (360 points), annual = full record since 1940 (~85 points); a too-wide request throws, and Claude narrows the range via the is_error path (step 16). Weekly/monthly ranges may include the current year — each complete week/month stands alone, which is what makes "this year vs last year so far" answerable — while annual uses complete years only; incomplete trailing periods are dropped by per-bucket completeness thresholds so a partial season never skews a mean
+    - **Per-city series cache (added 2026-09-23, R12).** Annual and monthly requests are served from a KV entry per geocoded city (`om:v1:{lat},{lon}`, 24h TTL). On a miss, the Worker fetches the city's full daily record once (1940 to today), aggregates it to both series and stores them. Every later annual or monthly request for that city takes a slice of the cached series, however the question is worded, and in multi-turn conversations too. Weekly requests (≤3 years) stay uncached. A failed KV write only costs a refetch.
 13. Register all 7 tools (3 GML + 2 NCEI + 1 NSIDC + 1 Open-Meteo) in `registry.ts` as Claude tool definitions
 14. Curl each upstream endpoint to confirm it responds, saving each response as the fixture the tests above run against (`worker/test/fixtures/`) — the same one-time check this step already called for, now captured to disk instead of thrown away:
     - `curl -o worker/test/fixtures/co2_mm_gl.csv https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_gl.csv` (one representative NOAA GML CSV — CH4/N2O share the same shape, no separate fixture needed)
@@ -446,7 +447,7 @@ Swift Charts handles thousands of points fine in a line chart, but passing 140+ 
 Non-streaming for v1 (simpler). The iOS app shows a loading indicator until the full response arrives. Streaming can be added later (URLSession supports it; the Worker Anthropic SDK supports it).
 
 ### R8 — Open-Meteo free tier is non-commercial only
-Open-Meteo's free tier explicitly prohibits commercial use. If ClimateChat ever includes paid features, a subscription, ads, or is sold, a commercial Open-Meteo plan is required (pricing starts at ~€400/yr as of 2024). **Action required before any monetization:** switch to the paid API tier and update the Worker's Open-Meteo base URL.
+Open-Meteo's free tier explicitly prohibits commercial use. If ClimateChat ever includes paid features, a subscription, ads, or is sold, a commercial Open-Meteo plan is required (pricing starts at ~€400/yr as of 2024). **Action required before any monetization:** switch to the paid API tier and update the Worker's Open-Meteo base URL. A paid tier does **not** make Open-Meteo unlimited. It removes the per-minute, per-hour and per-day caps but keeps a monthly quota, counted with the same weighting. See R12.
 
 ### R9 — Cache is scoped to single-turn questions only
 The cache key is a hash of the question text alone, which is only safe when there's no conversation history to disambiguate it. Once history is included, two different follow-ups with identical wording — "how much has it risen?" asked about CO2 in one conversation, about sea ice in another — would hash identically and serve the wrong cached answer to one of them. Fix: only read/write the cache when the incoming `messages` array is a single entry (no prior turns); any multi-turn follow-up always goes straight to Claude. This is the simpler and safer of two options — the alternative, folding conversation history into the cache key, effectively kills the hit rate since history is rarely identical across users, and answer caching is the single highest-leverage cost control in this plan (Section 8.2).
@@ -464,6 +465,29 @@ Anyone who finds the Worker URL could try to call it directly and spend the app'
 
 ### R11 — A secret committed to this public repo must be rotated, not just removed
 Bots scan public GitHub for exposed secrets continuously — typically within minutes of a push, not hours or days. If `ANTHROPIC_API_KEY`, `APP_SECRET`/`Secrets.xcconfig`, or any other secret is ever accidentally committed (a stray `git add -A`, a copy-pasted `.env` value, creating `Secrets.xcconfig` before the `.gitignore` rule is in place — see Phase 4, step 27), treat the exposed value as **compromised the instant it lands**, no matter how quickly it's caught. Deleting the file, amending the commit, or force-pushing a rewritten history does **not** undo the exposure: the value already went out over the wire the moment `git push` finished, and both automated scraper caches and anyone who cloned or forked the repo in that window retain it independent of what the repo's history looks like afterward. The only fix that actually matters is to **rotate the secret** — generate a new `ANTHROPIC_API_KEY` in the Anthropic dashboard and update the Worker secret (`wrangler secret put`), or generate a new `APP_SECRET` and update it in both the Worker and `Secrets.xcconfig` — before doing anything else. Clean up the git history afterward for hygiene if it matters to you, but the rotation, not the cleanup, is what actually closes the exposure.
+
+### R12 — Open-Meteo's quota counts data volume, not requests
+Open-Meteo counts every **2 weeks of data for one location as one API call**. The free tier allows 600 calls per minute, 5,000 per hour and 10,000 per day. So the size of the date range decides the cost, not the number of requests. Checked against open-meteo.com/en/pricing on 2026-09-23:
+- a default annual city query (1960 through last year) ≈ **1,720 calls**
+- annual from 1940 ≈ 2,240
+- monthly over 30 years ≈ 780
+- weekly over 2 years ≈ 52
+
+About **five default annual city questions use up the free tier's whole day**. After that, every city question fails with 429 (logged as `tool_fetch_failed`, and Claude says the data couldn't be retrieved) until the next day. A test burst of five 86-year requests on 2026-09-23 got 429s immediately. A single 86-year request made on its own succeeded in 2.15s, so one heavy request isn't rejected by itself.
+
+**Paid plans don't remove this (see R8).** Standard is 1M calls/month and Professional 5M/month, and the weighting appears to apply to them too. That's about 580 default annual city questions a month on Standard.
+
+**Unconfirmed:** neither Open-Meteo's pricing page nor its terms say whether the free limits are applied per IP address. If they are, Cloudflare Workers' shared outbound IPs could mean other customers' traffic counts against ours. Watch for 429s from `get_city_temperature_history` in Workers Logs.
+
+**Mitigation (built 2026-09-23):** the per-city series cache in `openMeteo.ts` (step 12). A city's past years never change, so the full record is fetched at most once a day per city (~2,240 calls, about 2.3s), and repeat questions about that city are free. The remaining exposure is many *different* cities in one day: about four new cities exhaust the free tier. That's acceptable for a small TestFlight group. Reassess before any wider release.
+
+**Future option — NOAA NCEI city time series for US cities.** NOAA NCEI's Climate at a Glance publishes city-level time series. That would take US city questions off Open-Meteo entirely: NOAA data has no quota, and NCEI is already one of our sources. The user tried NCEI's own charting page on 2026-09-23: a US city from 1935 to today came back quickly, as monthly data. Not yet checked:
+- which cities are covered
+- the API endpoint and response format
+- whether it offers annual aggregates or only monthly
+- what to cite: it must be "NOAA NCEI", never "NOAA GML", per Section 7
+
+Open-Meteo would stay the source for non-US cities. Consider this before any wider release, or if 429s show up in practice.
 
 ---
 

@@ -29,11 +29,13 @@ export const allToolDefinitions: Tool[] = [
  * tool name, invalid input, or upstream failure — the Phase 3 loop
  * catches it, logs the carried class, and returns an is_error
  * tool_result to Claude (plan step 16); handlers never decide policy.
+ * `kv` backs the Open-Meteo city series cache (R12); the other sources
+ * are fetched fresh every time.
  */
-export async function runTool(toolName: string, input: unknown): Promise<ToolDataResult> {
+export async function runTool(toolName: string, input: unknown, kv?: KVNamespace): Promise<ToolDataResult> {
 	if (gmlToolNames.includes(toolName)) return runGmlTool(toolName, input);
 	if (nceiToolNames.includes(toolName)) return runNceiTool(toolName, input);
 	if (seaIceToolNames.includes(toolName)) return runArcticSeaIce(input);
-	if (openMeteoToolNames.includes(toolName)) return runCityTemperatureHistory(input);
+	if (openMeteoToolNames.includes(toolName)) return runCityTemperatureHistory(input, kv);
 	throw new ToolError('unknown_tool', `Unknown tool: ${toolName}`);
 }
