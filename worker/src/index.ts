@@ -35,6 +35,10 @@ export const MAX_MESSAGE_LENGTH = 8000; // generous ceiling for any message (bou
 export const MAX_MESSAGES = 21; // plan step 49: 10 history exchanges + the new question
 export const MAX_BODY_LENGTH = 120_000; // headroom over MAX_MESSAGES worth of MAX_MESSAGE_LENGTH content plus JSON overhead
 
+// SPIKE scaffolding — Durable Object classes must be exported from the entry
+// module. Remove along with src/spikeCounter.ts when the spike is torn down.
+export { SpikeCounter } from './spikeCounter';
+
 /** Constant-time string compare — no first-mismatch timing oracle on the secret. */
 function timingSafeEqual(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
