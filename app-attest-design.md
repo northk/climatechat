@@ -432,13 +432,22 @@ which would silently let disallowed build categories through.
    2026-09-22**: the throttle already bounds DO creation, so challenges stay uniformly in
    the device DO with an alarm-based reaper, instead of a second KV-based mechanism.
 
-**Still open:**
+7. ~~Does rate limiting move from per-IP to per-key?~~ **Decided 2026-09-23: yes —
+   per-`keyId` for `/ask`, per-IP retained for enrollment.** Full rationale in
+   `project-plan.md` §8.3. In short: IP fails in both directions for a mobile app (CGNAT
+   makes it too coarse, network switching makes it trivially cycled), while moving the
+   counter into the per-device DO also removes a KV write per request against the binding
+   R4 constraint and makes the check atomic for free — it rides inside the
+   `blockConcurrencyWhile()` transaction the replay counter already needs (§7 pitfall 6).
+   Accepted trade-off: a reinstall mints a new key and a fresh quota; per-IP has the same
+   bypass more cheaply, and the spend cap bounds it either way.
 
-7. **Does rate limiting move from per-IP to per-key?** Once every request carries a
-   verified device identity, `keyId` is a strictly better rate-limit key than an IP — it
-   survives NAT and mobile IP churn in both directions. It also changes the R4 KV-write
-   maths, since counters would move from KV into the DO that already exists per device.
-   Deferring is fine; deciding it *after* shipping means a migration. **Owner: project.**
+   **Implementation note:** build the daily counter into the device DO from the start,
+   in the same guarded transaction as the replay counter — do not write per-IP KV logic
+   for `/ask` and migrate later. `rateLimit.ts` stays as-is for the transition window
+   while `X-App-Secret` is still live, and retires with it.
+
+**Still open:** nothing. All seven questions are settled.
 
 ---
 
