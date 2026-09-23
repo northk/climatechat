@@ -27,6 +27,6 @@ spike findings: see app-attest-design.md.
 
 ## Conventions
 - TypeScript strict mode; no floating promises
-- Model string: claude-sonnet-5
+- Model string: claude-sonnet-5 — changing it is one line of code but four coupled assumptions (max_tokens sizing, prompt-cache minimum prefix, Section 7 rule 9, temperature prohibition), three of which fail silently. Model choice is deliberately deferred to deploy time: see plan 8.1 and the model-change gate on plan step 40, and re-run step 41 before trusting any swap.
 - max_tokens: 1536 (sized for Sonnet 5's tokenizer, ~30% more tokens per text than 4.6 — don't reuse old-model token intuitions)
 - Response envelope types live in worker/src/types.ts — iOS Codable structs must match
