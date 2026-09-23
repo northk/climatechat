@@ -7,7 +7,7 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { Message, MessageCreateParamsNonStreaming } from '@anthropic-ai/sdk/resources/messages';
-import { askClaude, parseEnvelope, MODEL, MAX_TOKENS, FALLBACK_ANSWER } from '../src/claude';
+import { askClaude, parseEnvelope, MODEL, MAX_TOKENS, FALLBACK_ANSWER, LOOP_BUDGET_MS } from '../src/claude';
 import type { ToolDataResult } from '../src/types';
 
 const usage = { input_tokens: 100, output_tokens: 50 };
@@ -225,6 +225,13 @@ describe('askClaude - error classification (step 16)', () => {
 		return JSON.parse(errorSpy.mock.calls[0][0] as string) as Record<string, unknown>;
 	}
 
+	it('files a network-level fetch failure as tool_fetch_failed, not unhandled', async () => {
+		vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Network connection lost'));
+		const logged = await loggedErrorFor({ id: 't0', name: 'get_co2_levels', input: { granularity: 'annual' } });
+		expect(logged.class).toBe('tool_fetch_failed');
+		expect(logged.upstreamStatus).toBeUndefined();
+	});
+
 	it('files a hallucinated tool name as unknown_tool, not tool_parse_failed', async () => {
 		const logged = await loggedErrorFor({ id: 't1', name: 'get_rainfall_totals', input: {} });
 		expect(logged.class).toBe('unknown_tool');
@@ -336,5 +343,48 @@ describe('parseEnvelope - malformed output (R2)', () => {
 		const datasets = (result as { datasets: { data: unknown[] }[] }).datasets;
 		expect(datasets[0].data).toHaveLength(2);
 		expect(datasets[1].data).toHaveLength(1);
+	});
+});
+
+describe('askClaude - wall-clock budget', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('sets a budget that answers before the iOS 60s default request timeout', () => {
+		expect(LOOP_BUDGET_MS).toBeLessThan(60_000);
+	});
+
+	it('passes the same deadline signal to every Claude call', async () => {
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('year,mean,unc\n1979,336.85,0.10', { status: 200 }));
+		const { create } = scriptedCreator([
+			toolUseResponse([{ id: 'a', name: 'get_co2_levels', input: { granularity: 'annual' } }]),
+			textResponse('{"type":"text","answer":"ok"}'),
+		]);
+		const deadline = new AbortController().signal;
+		await askClaude(user('CO2?'), create, deadline);
+		expect(create).toHaveBeenCalledTimes(2);
+		for (const call of create.mock.calls) expect((call as unknown[])[1]).toEqual({ signal: deadline });
+	});
+
+	it('returns the fallback and logs claude_timeout when the budget runs out mid-call', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const controller = new AbortController();
+		const create = vi.fn(
+			(_params: MessageCreateParamsNonStreaming, { signal }: { signal: AbortSignal }) =>
+				new Promise<Message>((_resolve, reject) => {
+					signal.addEventListener('abort', () => reject(new Error('Request was aborted.')));
+				}),
+		);
+		const done = askClaude(user('CO2?'), create, controller.signal);
+		controller.abort();
+		expect(await done).toEqual({ type: 'text', answer: FALLBACK_ANSWER });
+		const logged = JSON.parse(errorSpy.mock.calls[0][0] as string) as Record<string, unknown>;
+		expect(logged.class).toBe('claude_timeout');
+	});
+
+	it('still propagates a non-timeout API error to the 500 path', async () => {
+		const create = vi.fn(() => Promise.reject(new Error('overloaded')));
+		await expect(askClaude(user('CO2?'), create, new AbortController().signal)).rejects.toThrow('overloaded');
 	});
 });

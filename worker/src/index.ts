@@ -152,7 +152,7 @@ export default {
 		try {
 			return await handleAsk(request, env, (messages) => {
 				const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-				return askClaude(messages, (params) => client.messages.create(params));
+				return askClaude(messages, (params, options) => client.messages.create(params, options));
 			});
 		} catch (error) {
 			// Top-level catch (step 24): the R2/5xx path the iOS app maps to

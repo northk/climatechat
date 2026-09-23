@@ -8,7 +8,7 @@
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
-import { ToolError, fetchOk } from './errors';
+import { ToolError, fetchOk, readTextBody } from './errors';
 
 const GML_BASE = 'https://gml.noaa.gov/webdata/ccgg/trends';
 
@@ -100,7 +100,7 @@ export async function runGmlTool(toolName: string, input: unknown): Promise<Tool
 	}
 
 	const response = await fetchOk(gmlUrl(gas.slug, granularity), 'NOAA GML');
-	const points = parseGmlCsv(await response.text(), granularity);
+	const points = parseGmlCsv(await readTextBody(response, 'NOAA GML'), granularity);
 	return {
 		source: 'NOAA GML',
 		description: `Global atmospheric ${gas.gasLabel} (${granularity} mean)`,
