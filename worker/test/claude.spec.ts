@@ -267,9 +267,18 @@ describe('askClaude - error classification (step 16)', () => {
 describe('parseEnvelope - malformed output (R2)', () => {
 	const noResults = new Map<string, ToolDataResult>();
 
-	it('returns prose as a text answer when Claude ignored the JSON rule', () => {
+	it('returns the generic fallback, not the prose, when Claude ignored the JSON rule', () => {
 		const result = parseEnvelope('CO2 is rising according to NOAA GML.', noResults);
-		expect(result).toEqual({ type: 'text', answer: 'CO2 is rising according to NOAA GML.' });
+		expect(result).toEqual({ type: 'text', answer: FALLBACK_ANSWER });
+	});
+
+	it('returns the generic fallback for prose wrapped around an otherwise-valid envelope', () => {
+		const result = parseEnvelope('Here is the answer:\n{"type":"text","answer":"424 ppm (NOAA GML)"}', noResults);
+		expect(result).toEqual({ type: 'text', answer: FALLBACK_ANSWER });
+	});
+
+	it('returns the generic fallback for empty output', () => {
+		expect(parseEnvelope('   ', noResults)).toEqual({ type: 'text', answer: FALLBACK_ANSWER });
 	});
 
 	it('returns the generic fallback for truncated JSON', () => {
