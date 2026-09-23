@@ -157,10 +157,13 @@ export function parseEnvelope(text: string, toolResults: Map<string, ToolDataRes
 		parsed = JSON.parse(trimmed);
 	} catch {
 		logError('claude_malformed_json', { message: `unparseable final response (${trimmed.length} chars)` });
-		// If Claude answered in prose despite rule 5, the prose is still an
-		// answer; a truncated JSON fragment is not
-		const looksLikeJson = trimmed.startsWith('{') || trimmed.startsWith('[');
-		return { type: 'text', answer: looksLikeJson || trimmed.length === 0 ? FALLBACK_ANSWER : trimmed };
+		// ANY unparseable output degrades to the fallback — prose included
+		// (Codex review). Output that broke rule 5 can't be trusted to have
+		// honored the other Section 7 rules either: it may be an off-topic
+		// answer that skipped the refusal envelope, or prose wrapped around
+		// JSON. Serving it as a text answer would also make it cacheable for
+		// up to 24h; the fallback never is (8.2).
+		return { type: 'text', answer: FALLBACK_ANSWER };
 	}
 
 	const envelope = parsed as { type?: unknown; answer?: unknown };
