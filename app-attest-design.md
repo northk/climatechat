@@ -729,9 +729,30 @@ simulates Durable Objects locally with no migration concept, so the tests need n
 in the deployable config. **Scaffolding must never leave a permanent mark on production
 migration history** — apply the same rule to any future spike that wants a DO.
 
-**Drop from devDependencies:** `cbor2`, `@peculiar/x509`, `reflect-metadata`. Promote
-`cbor-x`, `@peculiar/asn1-schema` and `@peculiar/asn1-x509` from devDependencies to
-dependencies, pinned to exact versions.
+**Dependencies — mostly done already (2026-09-23).** `cbor2`, `@peculiar/x509` and
+`reflect-metadata` have been removed, along with the two tests that exercised them (their
+findings survive in Q1/Q2 above). `@peculiar/asn1-schema` and `@peculiar/asn1-x509` are
+now in `dependencies`, because `src/spikeChain.ts` genuinely imports them.
+
+**`cbor-x` is deliberately still a devDependency** — nothing in `src/` imports it yet, so
+that is its honest classification today. It must move to `dependencies` when the real
+CBOR decoding is written, and **that move is enforced, not remembered**:
+`import-x/no-extraneous-dependencies` (eslint-plugin-import-x) is configured in
+`eslint.config.mjs` to error when anything under `src/**` imports a devDependency. Lint
+gates deploy, so the promotion is forced at exactly the moment production code first
+imports it.
+
+Why that guard exists: importing a devDependency from `src/` **builds and bundles
+perfectly well** — verified with `wrangler deploy --dry-run`, which happily emitted
+`cbor-x` into the bundle. esbuild resolves from `node_modules` and ignores which
+package.json section declared it, so the mistake is invisible until a production-only
+install (`npm ci --omit=dev`) fails. A checklist entry would not have caught it.
+
+**One remaining production footprint:** `src/index.ts` re-exports `SpikeCounter`, because
+Miniflare needs the class exported from the entry module to bind it in tests. It pulls in
+no libraries (~1 KB of dead code) but it *does* appear in the built bundle. Remove the
+export with `src/spikeCounter.ts` — and note this is the only spike artifact that would
+reach production if a deploy happened before teardown.
 
 ### Q5 — Alarm-based reaping: verified, and the one-alarm constraint is real
 
