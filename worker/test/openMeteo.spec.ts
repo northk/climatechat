@@ -348,13 +348,67 @@ describe('runCityTemperatureHistory - city series cache (R12)', () => {
 		expect(await env.CLIMATE_KV.get(keysFor(10.33).history)).toBeNull();
 	});
 
-	it('treats a corrupt cache entry as a miss and refetches that segment only', async () => {
+	/** The structured logs written so far, parsed. */
+	function loggedErrors(errorSpy: ReturnType<typeof vi.spyOn>): Record<string, unknown>[] {
+		return errorSpy.mock.calls.map((call) => JSON.parse(call[0] as string) as Record<string, unknown>);
+	}
+
+	it('logs nothing on an ordinary miss and fill', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		stubOpenMeteo(10.41);
+		await runCityTemperatureHistory({ city: 'Portland' }, env.CLIMATE_KV);
+		expect(errorSpy).not.toHaveBeenCalled();
+	});
+
+	it('treats a corrupt cache entry as a miss, logs it, and refetches that segment only', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 		const archiveRanges = stubOpenMeteo(10.44);
 		await runCityTemperatureHistory({ city: 'Portland' }, env.CLIMATE_KV);
 		await env.CLIMATE_KV.put(keysFor(10.44).history, '{"annual":');
 		const result = await runCityTemperatureHistory({ city: 'Portland' }, env.CLIMATE_KV);
 		expect(archiveRanges.slice(2)).toEqual(['1940-01-01..2022-12-31']);
 		expect(result.points).toHaveLength(2);
+		expect(loggedErrors(errorSpy)).toEqual([
+			{ class: 'kv_cache_failed', tool: 'get_city_temperature_history', message: 'history segment entry corrupt, refetching' },
+		]);
+	});
+
+	/** A KV binding whose reads and/or writes throw, like an exhausted write quota or a KV outage. */
+	function failingKv({ get, put }: { get?: boolean; put?: boolean }): KVNamespace {
+		return {
+			get: () => (get ? Promise.reject(new TypeError('KV GET failed: 500')) : Promise.resolve(null)),
+			put: () => (put ? Promise.reject(new Error('KV put() limit exceeded for the day.')) : Promise.resolve()),
+		} as unknown as KVNamespace;
+	}
+
+	it('still answers when KV writes fail, logging kv_cache_failed without the coordinates', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		stubOpenMeteo(10.45);
+		const result = await runCityTemperatureHistory({ city: 'Portland' }, failingKv({ put: true }));
+		expect(result.points.map((point) => point.x)).toEqual([2022, 2023]);
+
+		const logged = loggedErrors(errorSpy);
+		expect(logged.map((entry) => entry.message).sort()).toEqual([
+			'history segment write failed (Error)',
+			'recent segment write failed (Error)',
+		]);
+		expect(logged.every((entry) => entry.class === 'kv_cache_failed')).toBe(true);
+		const raw = errorSpy.mock.calls.map((call) => String(call[0])).join('\n');
+		expect(raw).not.toContain('10.45');
+		expect(raw).not.toContain('-122');
+	});
+
+	it('still answers when KV reads fail, logging each as kv_cache_failed', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const archiveRanges = stubOpenMeteo(10.46);
+		const result = await runCityTemperatureHistory({ city: 'Portland' }, failingKv({ get: true }));
+		expect(result.points).toHaveLength(2);
+		expect(archiveRanges).toHaveLength(2);
+		expect(
+			loggedErrors(errorSpy)
+				.map((entry) => entry.message)
+				.sort(),
+		).toEqual(['history segment read failed (TypeError)', 'recent segment read failed (TypeError)']);
 	});
 
 	it('still answers without a KV binding, fetching every time', async () => {

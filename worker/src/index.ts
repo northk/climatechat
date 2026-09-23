@@ -15,7 +15,8 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
-import { askClaude, logError } from './claude';
+import { askClaude } from './claude';
+import { logError } from './log';
 import { cacheGet, cacheSet } from './cache';
 import { checkAndIncrement, DAILY_LIMIT } from './rateLimit';
 import type { WorkerResponse } from './types';

@@ -21,7 +21,8 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartDataset, ClaudeChartDataset, ToolDataResult, WorkerResponse } from './types';
 import { SYSTEM_PROMPT } from './prompts';
-import { ToolError, type ToolErrorClass } from './tools/errors';
+import { ToolError } from './tools/errors';
+import { logError, type ErrorClass } from './log';
 import { allToolDefinitions, runTool } from './tools/registry';
 
 export const MODEL = 'claude-sonnet-5';
@@ -54,16 +55,6 @@ export const LOOP_BUDGET_MS = 45_000;
 export const FALLBACK_ANSWER = 'Sorry — something went wrong while putting that answer together. Please try asking again.';
 
 export type MessageCreator = (params: MessageCreateParamsNonStreaming, options: { signal: AbortSignal }) => Promise<Message>;
-
-type ErrorClass = ToolErrorClass | 'claude_malformed_json' | 'chart_injection_mismatch' | 'claude_timeout' | 'unhandled';
-
-/**
- * Structured error logging (plan step 16): lands in Workers Logs via
- * the observability binding. Never include question text or IPs.
- */
-export function logError(errorClass: ErrorClass, fields: { tool?: string; upstreamStatus?: number; message: string }): void {
-	console.error(JSON.stringify({ class: errorClass, ...fields }));
-}
 
 /** Put a cache_control breakpoint on the last content block of the last message. */
 function withCacheBreakpoint(messages: MessageParam[]): MessageParam[] {

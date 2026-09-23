@@ -29,6 +29,7 @@
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
 import { ToolError, fetchJson } from './errors';
+import { logError } from '../log';
 
 const GEOCODE_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const ARCHIVE_URL = 'https://archive-api.open-meteo.com/v1/archive';
@@ -223,16 +224,39 @@ function archiveUrl(city: GeocodedCity, startDate: string, endDate: string): str
 	);
 }
 
-/** A cached entry, or null on a miss, a KV error, or a corrupt value. */
-async function readCachedSeries(kv: KVNamespace, key: string): Promise<CitySeries | null> {
+type Segment = 'history' | 'recent';
+
+/**
+ * Log a cache failure without failing the answer. Silent swallowing would
+ * hide the likeliest cause, KV's free-tier 1,000 writes/day (R4) running
+ * out: every city question would quietly refetch and then surface as
+ * Open-Meteo 429s, pointing at the wrong culprit. The key is deliberately
+ * left out — it carries the city's coordinates (step 16's logging rule).
+ */
+function logCacheFailure(segment: Segment, what: string, error?: unknown): void {
+	const cause = error === undefined ? '' : ` (${error instanceof Error ? error.name : 'unknown'})`;
+	logError('kv_cache_failed', { tool: 'get_city_temperature_history', message: `${segment} segment ${what}${cause}` });
+}
+
+/** A cached entry, or null on a miss, a KV read error, or a corrupt value (the last two logged). */
+async function readCachedSeries(kv: KVNamespace, key: string, segment: Segment): Promise<CitySeries | null> {
+	let stored: string | null;
 	try {
-		const stored = await kv.get(key);
-		if (!stored) return null;
-		const parsed = JSON.parse(stored) as Partial<CitySeries> | null;
-		return Array.isArray(parsed?.annual) && Array.isArray(parsed?.monthly) ? (parsed as CitySeries) : null;
-	} catch {
+		stored = await kv.get(key);
+	} catch (error) {
+		logCacheFailure(segment, 'read failed', error);
 		return null;
 	}
+	if (!stored) return null;
+	let parsed: Partial<CitySeries> | null;
+	try {
+		parsed = JSON.parse(stored) as Partial<CitySeries> | null;
+	} catch {
+		parsed = null;
+	}
+	if (Array.isArray(parsed?.annual) && Array.isArray(parsed?.monthly)) return parsed as CitySeries;
+	logCacheFailure(segment, 'entry corrupt, refetching');
+	return null;
 }
 
 /**
@@ -242,26 +266,28 @@ async function readCachedSeries(kv: KVNamespace, key: string): Promise<CitySerie
 async function getSegment(
 	city: GeocodedCity,
 	kv: KVNamespace | undefined,
+	segment: Segment,
 	key: string,
 	startDate: string,
 	endDate: string,
 	ttlSeconds: number,
 ): Promise<CitySeries> {
 	if (kv) {
-		const cached = await readCachedSeries(kv, key);
+		const cached = await readCachedSeries(kv, key, segment);
 		if (cached) return cached;
 	}
 	const body = await fetchJson(archiveUrl(city, startDate, endDate), 'Open-Meteo archive');
-	const segment: CitySeries = { annual: aggregateArchive(body, 'annual'), monthly: aggregateArchive(body, 'monthly') };
+	const series: CitySeries = { annual: aggregateArchive(body, 'annual'), monthly: aggregateArchive(body, 'monthly') };
 	if (kv) {
 		try {
-			await kv.put(key, JSON.stringify(segment), { expirationTtl: ttlSeconds });
-		} catch {
-			// A failed write (e.g. the free tier's 1,000 writes/day, R4) only
-			// costs the next request a refetch; the answer itself is fine
+			await kv.put(key, JSON.stringify(series), { expirationTtl: ttlSeconds });
+		} catch (error) {
+			// The answer itself is fine — a failed write only costs the next
+			// request a refetch. Logged, not rethrown (see logCacheFailure).
+			logCacheFailure(segment, 'write failed', error);
 		}
 	}
-	return segment;
+	return series;
 }
 
 /**
@@ -281,8 +307,8 @@ async function getCitySeries(city: GeocodedCity, kv: KVNamespace | undefined): P
 	// in flight after the tool has already failed. Wait for both, then
 	// surface the first failure.
 	const [history, recent] = await Promise.allSettled([
-		getSegment(city, kv, keys.history, `${ARCHIVE_FIRST_YEAR}-01-01`, `${currentYear - 2}-12-31`, HISTORY_TTL_SECONDS),
-		getSegment(city, kv, keys.recent, `${currentYear - 1}-01-01`, today, RECENT_TTL_SECONDS),
+		getSegment(city, kv, 'history', keys.history, `${ARCHIVE_FIRST_YEAR}-01-01`, `${currentYear - 2}-12-31`, HISTORY_TTL_SECONDS),
+		getSegment(city, kv, 'recent', keys.recent, `${currentYear - 1}-01-01`, today, RECENT_TTL_SECONDS),
 	]);
 	if (history.status === 'rejected') throw history.reason;
 	if (recent.status === 'rejected') throw recent.reason;
