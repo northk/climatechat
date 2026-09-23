@@ -9,7 +9,7 @@
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
-import { ToolError, fetchOk, fetchJson } from './errors';
+import { ToolError, fetchOk, fetchJson, readTextBody } from './errors';
 
 const CAG_BASE = 'https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean';
 const OHC_BASE = 'https://www.ncei.noaa.gov/data/oceans/woa/DATA_ANALYSIS/3M_HEAT_CONTENT/DATA/basin/yearly';
@@ -163,7 +163,7 @@ export async function runOceanHeatContent(input: unknown): Promise<ToolDataResul
 	const url = `${OHC_BASE}/h22-${basinConfig.fileCode}-${depth === '700m' ? '700' : '2000'}m.dat`;
 	const response = await fetchOk(url, 'NOAA NCEI OHC');
 
-	const points = parseOhcDat(await response.text(), basinConfig.column);
+	const points = parseOhcDat(await readTextBody(response, 'NOAA NCEI OHC'), basinConfig.column);
 	return {
 		source: 'NOAA NCEI',
 		description: `${basinConfig.label} ocean heat content anomaly, 0–${depth} (annual)`,

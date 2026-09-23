@@ -34,6 +34,16 @@ export const MAX_TOKENS = 1536;
  * as an is_error result but which still costs a round. See plan step 16.
  */
 const MAX_ROUNDS = 7;
+/**
+ * Wall-clock budget for the whole agent loop — every Claude call plus
+ * every tool round (Codex review). The SDK's own default is a 10-minute
+ * timeout per attempt, which would let a stalled API recreate the
+ * silent hang this app exists to avoid. 45s sits under iOS URLSession's
+ * 60s default request timeout, so the app gets the Worker's answer
+ * rather than its own timeout; typical requests take 3-8s. Tool fetches
+ * have their own 5s cap (tools/errors.ts FETCH_TIMEOUT_MS).
+ */
+export const LOOP_BUDGET_MS = 45_000;
 
 /**
  * R2 fallback answer when Claude's output can't be turned into an
@@ -43,9 +53,9 @@ const MAX_ROUNDS = 7;
  */
 export const FALLBACK_ANSWER = 'Sorry — something went wrong while putting that answer together. Please try asking again.';
 
-export type MessageCreator = (params: MessageCreateParamsNonStreaming) => Promise<Message>;
+export type MessageCreator = (params: MessageCreateParamsNonStreaming, options: { signal: AbortSignal }) => Promise<Message>;
 
-type ErrorClass = ToolErrorClass | 'claude_malformed_json' | 'chart_injection_mismatch' | 'unhandled';
+type ErrorClass = ToolErrorClass | 'claude_malformed_json' | 'chart_injection_mismatch' | 'claude_timeout' | 'unhandled';
 
 /**
  * Structured error logging (plan step 16): lands in Workers Logs via
@@ -69,20 +79,41 @@ function withCacheBreakpoint(messages: MessageParam[]): MessageParam[] {
 /**
  * Run the full tool-use loop for a conversation and return the public
  * response envelope. `messages` is the incoming user/assistant history
- * (iOS sends plain text turns).
+ * (iOS sends plain text turns). `deadline` is injectable so tests can
+ * abort it; production uses LOOP_BUDGET_MS.
  */
-export async function askClaude(messages: MessageParam[], createMessage: MessageCreator): Promise<WorkerResponse> {
+export async function askClaude(
+	messages: MessageParam[],
+	createMessage: MessageCreator,
+	deadline: AbortSignal = AbortSignal.timeout(LOOP_BUDGET_MS),
+): Promise<WorkerResponse> {
 	const conversation: MessageParam[] = [...messages];
 	const toolResults = new Map<string, ToolDataResult>();
 
 	for (let round = 1; round <= MAX_ROUNDS; round++) {
-		const response = await createMessage({
-			model: MODEL,
-			max_tokens: MAX_TOKENS,
-			system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-			tools: allToolDefinitions,
-			messages: withCacheBreakpoint(conversation),
-		});
+		let response: Message;
+		try {
+			response = await createMessage(
+				{
+					model: MODEL,
+					max_tokens: MAX_TOKENS,
+					system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+					tools: allToolDefinitions,
+					messages: withCacheBreakpoint(conversation),
+				},
+				{ signal: deadline },
+			);
+		} catch (error) {
+			// Out of budget (mid-call, or already spent by earlier rounds —
+			// an aborted signal rejects immediately): same outcome as running
+			// out of rounds below, a never-cached fallback. Any other API
+			// error still propagates to index.ts's 500 path.
+			if (deadline.aborted) {
+				logError('claude_timeout', { message: `agent loop exceeded its ${LOOP_BUDGET_MS}ms budget in round ${round}` });
+				return { type: 'text', answer: FALLBACK_ANSWER };
+			}
+			throw error;
+		}
 
 		// Per-round usage log: cache verification (Section 8.5) reads these
 		console.log(JSON.stringify({ round, usage: response.usage }));

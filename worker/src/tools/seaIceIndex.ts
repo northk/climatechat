@@ -12,7 +12,7 @@
 
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
-import { ToolError, fetchOk } from './errors';
+import { ToolError, fetchOk, readTextBody } from './errors';
 
 const SEA_ICE_BASE = 'https://noaadata.apps.nsidc.org/NOAA/G02135/north/monthly/data';
 
@@ -81,7 +81,7 @@ export async function runArcticSeaIce(input: unknown): Promise<ToolDataResult> {
 	const url = `${SEA_ICE_BASE}/N_${paddedMonth}_extent_v4.0.csv`;
 	const response = await fetchOk(url, 'NSIDC sea ice');
 
-	const points = parseSeaIceCsv(await response.text());
+	const points = parseSeaIceCsv(await readTextBody(response, 'NSIDC sea ice'));
 	return {
 		source: 'NSIDC/NOAA Sea Ice Index',
 		description: `Arctic sea ice extent each ${MONTH_NAMES[month - 1]} since 1979`,
