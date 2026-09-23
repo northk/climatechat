@@ -47,6 +47,35 @@ App Attest was chosen because it establishes real hardware-backed provenance and
 subsumes R10's original freeloading/scraping concern, rather than solving only this one
 finding.
 
+### 1a. What App Attest does *not* prove — accepted residual risk
+
+Be precise about the provenance App Attest gives us: it proves a request was **sent by a
+genuine, unmodified instance of the app on real Apple hardware**. It does **not** prove
+the `role: "assistant"` turns in that request were **authored by this Worker**. The
+finding is closed only in the sense that the sole remaining sender is our own app, which
+only ever replays what the Worker returned to it.
+
+The gap is a **jailbroken device**. There, an attacker can hook the genuine, attested app
+at runtime (e.g. Frida) and rewrite the history *before* it is signed; the assertion then
+verifies perfectly. Apple states App Attest cannot definitively detect a compromised OS,
+and no app-side or server-side measure practically can — once the device's OS is owned,
+the device is the attacker's. We therefore **accept this risk rather than mitigate it**,
+because its blast radius is small and already bounded elsewhere:
+
+- **Self-only impact.** Multi-turn requests are never cached (`cache.ts`, R9), so a forged
+  transcript can only mislead the attacker's own session, never another user's answer.
+- **No forged tool data.** History entries must be plain strings (`parseMessages`), so a
+  forged turn can *claim* a figure but cannot inject a `tool_result`; chart data points
+  are only ever injected from tool calls made within the current request.
+- **Bounded cost.** A jailbroken device still needs its own attested key, so it is
+  subject to the per-keyId rate limit, plus the input-size limits (`MAX_MESSAGES`,
+  `MAX_MESSAGE_LENGTH`, `MAX_BODY_LENGTH`) and the Anthropic spend cap (plan 8.1).
+
+**Do not treat this as an open item** or re-introduce transcript signing / a server-side
+conversation store to close it: both were rejected above, and neither would stop a
+jailbroken device either — the genuine app would faithfully sign or reference whatever
+the hooked process hands it.
+
 ---
 
 ## 2. Decision: the stack
