@@ -411,6 +411,36 @@ describe('runCityTemperatureHistory - city series cache (R12)', () => {
 		).toEqual(['history segment read failed (TypeError)', 'recent segment read failed (TypeError)']);
 	});
 
+	it('when both segments fail, throws the history error and logs the recent one instead of dropping it', async () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+			const url = new URL(input instanceof Request ? input.url : String(input));
+			if (url.hostname.startsWith('geocoding-api')) {
+				return Promise.resolve(
+					Response.json({ results: [{ name: 'Portland', latitude: 10.47, longitude: -122.67621, country_code: 'US' }] }),
+				);
+			}
+			// History (starts 1940) is rate-limited; recent gets a non-JSON body — two different classes
+			return Promise.resolve(
+				url.searchParams.get('start_date') === '1940-01-01'
+					? new Response('rate limited', { status: 429 })
+					: new Response('<html>maintenance</html>', { status: 200 }),
+			);
+		});
+
+		await expect(runCityTemperatureHistory({ city: 'Portland' }, env.CLIMATE_KV)).rejects.toMatchObject({
+			toolErrorClass: 'tool_fetch_failed',
+			upstreamStatus: 429,
+		});
+		expect(loggedErrors(errorSpy)).toEqual([
+			{
+				class: 'tool_parse_failed',
+				tool: 'get_city_temperature_history',
+				message: 'recent segment also failed: Open-Meteo archive: response body was not valid JSON',
+			},
+		]);
+	});
+
 	it('still answers without a KV binding, fetching every time', async () => {
 		const archiveRanges = stubOpenMeteo(10.55);
 		await runCityTemperatureHistory({ city: 'Portland' });

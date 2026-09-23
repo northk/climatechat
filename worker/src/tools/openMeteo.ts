@@ -226,6 +226,8 @@ function archiveUrl(city: GeocodedCity, startDate: string, endDate: string): str
 
 type Segment = 'history' | 'recent';
 
+const CITY_TOOL_NAME = 'get_city_temperature_history';
+
 /**
  * Log a cache failure without failing the answer. Silent swallowing would
  * hide the likeliest cause, KV's free-tier 1,000 writes/day (R4) running
@@ -235,7 +237,7 @@ type Segment = 'history' | 'recent';
  */
 function logCacheFailure(segment: Segment, what: string, error?: unknown): void {
 	const cause = error === undefined ? '' : ` (${error instanceof Error ? error.name : 'unknown'})`;
-	logError('kv_cache_failed', { tool: 'get_city_temperature_history', message: `${segment} segment ${what}${cause}` });
+	logError('kv_cache_failed', { tool: CITY_TOOL_NAME, message: `${segment} segment ${what}${cause}` });
 }
 
 /** A cached entry, or null on a miss, a KV read error, or a corrupt value (the last two logged). */
@@ -305,17 +307,35 @@ async function getCitySeries(city: GeocodedCity, kv: KVNamespace | undefined): P
 	// allSettled, not all: if one segment fails, Promise.all would reject
 	// while the other's fetch and KV write are still running, leaving work
 	// in flight after the tool has already failed. Wait for both, then
-	// surface the first failure.
+	// surface the first failure — logging the second if both failed.
 	const [history, recent] = await Promise.allSettled([
 		getSegment(city, kv, 'history', keys.history, `${ARCHIVE_FIRST_YEAR}-01-01`, `${currentYear - 2}-12-31`, HISTORY_TTL_SECONDS),
 		getSegment(city, kv, 'recent', keys.recent, `${currentYear - 1}-01-01`, today, RECENT_TTL_SECONDS),
 	]);
-	if (history.status === 'rejected') throw history.reason;
+	if (history.status === 'rejected') {
+		if (recent.status === 'rejected') logDroppedFailure(recent.reason);
+		throw history.reason;
+	}
 	if (recent.status === 'rejected') throw recent.reason;
 	return {
 		annual: [...history.value.annual, ...recent.value.annual],
 		monthly: [...history.value.monthly, ...recent.value.monthly],
 	};
+}
+
+/**
+ * Log the `recent` segment's failure when `history` failed too. Only one
+ * error can be thrown, and claude.ts logs that one; without this the
+ * second would vanish, and it can have a different class (e.g. history
+ * hits a 429 while recent's format drifted — `tool_parse_failed` is the
+ * drift signal). Same class mapping as claude.ts's tool-error logging.
+ */
+function logDroppedFailure(error: unknown): void {
+	logError(error instanceof ToolError ? error.toolErrorClass : 'unhandled', {
+		tool: CITY_TOOL_NAME,
+		upstreamStatus: error instanceof ToolError ? error.upstreamStatus : undefined,
+		message: `recent segment also failed: ${error instanceof Error ? error.message : String(error)}`,
+	});
 }
 
 /**
