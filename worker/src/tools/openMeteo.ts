@@ -13,9 +13,16 @@
  * Annual and monthly series are served from a per-city KV cache (R12).
  * Open-Meteo bills every 2 weeks of data as one API call, so a default
  * annual query (1960 on) costs ~1,720 of the free tier's 10,000 daily
- * calls. A city's past years never change, so one full-record fetch
- * (1940 → today) is aggregated to both series, stored, and sliced for
- * every later request about that city, whatever the question wording.
+ * calls. Each city's record is cached in two KV segments, each
+ * aggregated to both series and sliced for every later request about that
+ * city, whatever the question wording:
+ *   - history: 1940 through the end of the year before last. Past data
+ *     never changes, so it's fetched once per city per year (~2,190 calls).
+ *   - recent: last year through today, refreshed daily (~52 calls).
+ * Last year stays in `recent` because the archive lags real time by a few
+ * days and its newest data is preliminary, revised for a couple of months
+ * afterwards. Freezing late December into `history` in early January
+ * would pin incomplete or superseded values for a year.
  * Weekly ranges are small (≤3 years ≈ 78 calls) and stay uncached.
  */
 
@@ -32,13 +39,18 @@ const ARCHIVE_FIRST_YEAR = 1940;
 const DEFAULT_ANNUAL_START = 1960;
 
 /**
- * City series cache lifetime. Past years are immutable; the TTL only
- * bounds how stale the newest complete month (and, each January, the
- * newest complete year) can get. One refetch per active city per day.
+ * `recent` segment lifetime: bounds how stale the newest complete month
+ * can get, at ~52 calls per active city per day.
  */
-export const CITY_CACHE_TTL_SECONDS = 24 * 60 * 60;
+export const RECENT_TTL_SECONDS = 24 * 60 * 60;
+/**
+ * `history` segment lifetime. Validity comes from the year in the key (a
+ * new year means a new key, like rateLimit.ts's date-keyed counters);
+ * this TTL only garbage-collects entries for cities nobody asks about.
+ */
+export const HISTORY_TTL_SECONDS = 400 * 24 * 60 * 60;
 /** Bump the version if the cached shape or aggregation ever changes. */
-const CITY_CACHE_PREFIX = 'om:v1:';
+const CITY_CACHE_PREFIX = 'om:v2:';
 
 export type CityGranularity = 'annual' | 'monthly' | 'weekly';
 
@@ -188,12 +200,19 @@ export interface CitySeries {
 }
 
 /**
- * Cache key from the geocoded coordinates, not the query text: "Portland",
- * "portland" and "Portland, Oregon" geocode to the same point and share
- * one entry. 2 decimals ≈ 1 km, finer than the archive's grid.
+ * Cache keys from the geocoded coordinates, not the query text:
+ * "Portland", "portland" and "Portland, Oregon" geocode to the same point
+ * and share entries. 2 decimals ≈ 1 km, finer than the archive's grid.
+ * Both keys carry the current year, so the segment boundary moves at New
+ * Year without ever pairing a new `history` with an old `recent` — they
+ * would overlap on a year and duplicate its points.
  */
-export function cityCacheKey(city: GeocodedCity): string {
-	return `${CITY_CACHE_PREFIX}${city.latitude.toFixed(2)},${city.longitude.toFixed(2)}`;
+export function cityCacheKeys(city: GeocodedCity, currentYear: number): { history: string; recent: string } {
+	const coords = `${city.latitude.toFixed(2)},${city.longitude.toFixed(2)}`;
+	return {
+		history: `${CITY_CACHE_PREFIX}hist:${currentYear}:${coords}`,
+		recent: `${CITY_CACHE_PREFIX}recent:${currentYear}:${coords}`,
+	};
 }
 
 function archiveUrl(city: GeocodedCity, startDate: string, endDate: string): string {
@@ -217,30 +236,60 @@ async function readCachedSeries(kv: KVNamespace, key: string): Promise<CitySerie
 }
 
 /**
- * The city's full annual + monthly series: from KV when cached, else one
- * full-record archive fetch aggregated both ways and written back. `kv`
- * is optional so unit tests can exercise the tool without a binding;
- * production always passes it (index.ts → askClaude → runTool).
+ * One cache segment: from KV when cached, else one archive fetch for the
+ * date range, aggregated both ways and written back.
  */
-async function getCitySeries(city: GeocodedCity, kv: KVNamespace | undefined): Promise<CitySeries> {
-	const key = cityCacheKey(city);
+async function getSegment(
+	city: GeocodedCity,
+	kv: KVNamespace | undefined,
+	key: string,
+	startDate: string,
+	endDate: string,
+	ttlSeconds: number,
+): Promise<CitySeries> {
 	if (kv) {
 		const cached = await readCachedSeries(kv, key);
 		if (cached) return cached;
 	}
-	// Clamp to today — the archive API rejects future dates
-	const today = new Date().toISOString().slice(0, 10);
-	const body = await fetchJson(archiveUrl(city, `${ARCHIVE_FIRST_YEAR}-01-01`, today), 'Open-Meteo archive');
-	const series: CitySeries = { annual: aggregateArchive(body, 'annual'), monthly: aggregateArchive(body, 'monthly') };
+	const body = await fetchJson(archiveUrl(city, startDate, endDate), 'Open-Meteo archive');
+	const segment: CitySeries = { annual: aggregateArchive(body, 'annual'), monthly: aggregateArchive(body, 'monthly') };
 	if (kv) {
 		try {
-			await kv.put(key, JSON.stringify(series), { expirationTtl: CITY_CACHE_TTL_SECONDS });
+			await kv.put(key, JSON.stringify(segment), { expirationTtl: ttlSeconds });
 		} catch {
 			// A failed write (e.g. the free tier's 1,000 writes/day, R4) only
 			// costs the next request a refetch; the answer itself is fine
 		}
 	}
-	return series;
+	return segment;
+}
+
+/**
+ * The city's full annual + monthly series, 1940 → today: `history` +
+ * `recent` concatenated. The split falls on a year boundary, so no annual
+ * or monthly bucket spans it and concatenating is exact. `kv` is optional
+ * so unit tests can exercise the tool without a binding; production
+ * always passes it (index.ts → askClaude → runTool).
+ */
+async function getCitySeries(city: GeocodedCity, kv: KVNamespace | undefined): Promise<CitySeries> {
+	const currentYear = new Date().getUTCFullYear();
+	const keys = cityCacheKeys(city, currentYear);
+	// Clamp to today — the archive API rejects future dates
+	const today = new Date().toISOString().slice(0, 10);
+	// allSettled, not all: if one segment fails, Promise.all would reject
+	// while the other's fetch and KV write are still running, leaving work
+	// in flight after the tool has already failed. Wait for both, then
+	// surface the first failure.
+	const [history, recent] = await Promise.allSettled([
+		getSegment(city, kv, keys.history, `${ARCHIVE_FIRST_YEAR}-01-01`, `${currentYear - 2}-12-31`, HISTORY_TTL_SECONDS),
+		getSegment(city, kv, keys.recent, `${currentYear - 1}-01-01`, today, RECENT_TTL_SECONDS),
+	]);
+	if (history.status === 'rejected') throw history.reason;
+	if (recent.status === 'rejected') throw recent.reason;
+	return {
+		annual: [...history.value.annual, ...recent.value.annual],
+		monthly: [...history.value.monthly, ...recent.value.monthly],
+	};
 }
 
 /**

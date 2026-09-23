@@ -4,14 +4,16 @@
  * captured via curl (step 14). No live network calls.
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { env } from 'cloudflare:test';
 import {
 	parseGeocodeJson,
 	aggregateArchive,
 	runCityTemperatureHistory,
 	openMeteoToolDefinitions,
-	cityCacheKey,
+	cityCacheKeys,
+	HISTORY_TTL_SECONDS,
+	RECENT_TTL_SECONDS,
 	sliceSeries,
 } from '../src/tools/openMeteo';
 import geocodeRaw from './fixtures/open_meteo_geocode.json?raw';
@@ -191,82 +193,175 @@ describe('sliceSeries', () => {
 });
 
 describe('runCityTemperatureHistory - city series cache (R12)', () => {
+	// Pin "today" so the Portland 2022-2023 fixture straddles the segment
+	// boundary: history = 1940..2022, recent = 2023..today. Only Date is
+	// faked — real timers keep the async test machinery working.
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2024-06-15T12:00:00Z'));
+	});
+
 	afterEach(() => {
+		vi.useRealTimers();
 		vi.restoreAllMocks();
 	});
 
-	/**
-	 * Stub both Open-Meteo endpoints: the geocoder resolves to `latitude`
-	 * (unique per test, so no two tests share a cache key) and the archive
-	 * serves the Portland 2022-2023 fixture. Records the archive URLs hit.
-	 */
-	function stubOpenMeteo(latitude: number) {
-		const archiveUrls: string[] = [];
-		vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
-			const url = String(input instanceof Request ? input.url : input);
-			if (url.includes('geocoding-api')) {
-				return Promise.resolve(Response.json({ results: [{ name: 'Portland', latitude, longitude: -122.67621, country_code: 'US' }] }));
-			}
-			archiveUrls.push(url);
-			return Promise.resolve(new Response(archiveRaw, { status: 200 }));
-		});
-		return archiveUrls;
+	type Daily = { time: string[]; temperature_2m_mean: (number | null)[] };
+	const fixtureDaily = (archiveFixture as { daily: Daily }).daily;
+
+	/** Synthetic 2021-2025 daily series, flat per year (10 °C in 2021, +1 each year), so annual means are exact. */
+	function syntheticDaily(): Daily {
+		const daily: Daily = { time: [], temperature_2m_mean: [] };
+		for (let day = new Date('2021-01-01T00:00:00Z'); day.getUTCFullYear() <= 2025; day.setUTCDate(day.getUTCDate() + 1)) {
+			daily.time.push(day.toISOString().slice(0, 10));
+			daily.temperature_2m_mean.push(10 + day.getUTCFullYear() - 2021);
+		}
+		return daily;
 	}
 
-	const cacheKeyFor = (latitude: number) => cityCacheKey({ name: 'Portland', latitude, longitude: -122.67621, countryCode: 'US' });
+	/**
+	 * Stub both Open-Meteo endpoints: the geocoder resolves to `latitude`
+	 * (unique per test, so no two tests share cache keys) and the archive
+	 * serves `data`'s days within the requested start/end dates, like the
+	 * real API. Records each archive request's date range.
+	 */
+	function stubOpenMeteo(latitude: number, data: Daily = fixtureDaily) {
+		const archiveRanges: string[] = [];
+		vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+			const url = new URL(input instanceof Request ? input.url : String(input));
+			if (url.hostname.startsWith('geocoding-api')) {
+				return Promise.resolve(Response.json({ results: [{ name: 'Portland', latitude, longitude: -122.67621, country_code: 'US' }] }));
+			}
+			const start = url.searchParams.get('start_date') ?? '';
+			const end = url.searchParams.get('end_date') ?? '';
+			archiveRanges.push(`${start}..${end}`);
+			const keep = data.time.map((day) => day >= start && day <= end);
+			return Promise.resolve(
+				Response.json({
+					daily: {
+						time: data.time.filter((_, i) => keep[i]),
+						temperature_2m_mean: data.temperature_2m_mean.filter((_, i) => keep[i]),
+					},
+				}),
+			);
+		});
+		return archiveRanges;
+	}
 
-	it('fetches the full record from 1940 once, then serves annual AND monthly from KV', async () => {
-		const archiveUrls = stubOpenMeteo(10.11);
+	const keysFor = (latitude: number, year = 2024) =>
+		cityCacheKeys({ name: 'Portland', latitude, longitude: -122.67621, countryCode: 'US' }, year);
+
+	it('fills both segments on a miss, then serves annual AND monthly from KV', async () => {
+		const archiveRanges = stubOpenMeteo(10.11);
 
 		const annual = await runCityTemperatureHistory({ city: 'Portland' }, env.CLIMATE_KV);
-		expect(archiveUrls).toHaveLength(1);
-		expect(archiveUrls[0]).toContain('start_date=1940-01-01');
+		expect(archiveRanges.sort()).toEqual(['1940-01-01..2022-12-31', '2023-01-01..2024-06-15']);
 		expect(annual.points.map((point) => point.x)).toEqual([2022, 2023]);
-		expect(await env.CLIMATE_KV.get(cacheKeyFor(10.11))).not.toBeNull();
+		expect(await env.CLIMATE_KV.get(keysFor(10.11).history)).not.toBeNull();
+		expect(await env.CLIMATE_KV.get(keysFor(10.11).recent)).not.toBeNull();
 
 		// Different wording, different granularity — same geocoded point, no refetch
 		const monthly = await runCityTemperatureHistory(
 			{ city: 'portland, oregon', granularity: 'monthly', start_year: 2023, end_year: 2023 },
 			env.CLIMATE_KV,
 		);
-		expect(archiveUrls).toHaveLength(1);
+		expect(archiveRanges).toHaveLength(2);
 		expect(monthly.points).toHaveLength(12);
 		expect(monthly.points.every((point) => Math.floor(point.x) === 2023)).toBe(true);
 		expect(monthly.source).toBe('Open-Meteo');
 	});
 
-	it('returns the same points from the cache as from the fetch that filled it', async () => {
+	it('the next day, refetches only the small recent segment, never the history', async () => {
+		const archiveRanges = stubOpenMeteo(10.12);
+		await runCityTemperatureHistory({ city: 'Portland' }, env.CLIMATE_KV);
+		// Stand-in for the recent segment's 24h expiry
+		await env.CLIMATE_KV.delete(keysFor(10.12).recent);
+		vi.setSystemTime(new Date('2024-06-16T12:00:00Z'));
+
+		const result = await runCityTemperatureHistory({ city: 'Portland' }, env.CLIMATE_KV);
+		expect(archiveRanges).toEqual(expect.arrayContaining(['2023-01-01..2024-06-16']));
+		expect(archiveRanges).toHaveLength(3);
+		expect(result.points.map((point) => point.x)).toEqual([2022, 2023]);
+	});
+
+	it('at New Year, moves the boundary: both segments refetch under the new year keys', async () => {
+		const archiveRanges = stubOpenMeteo(10.13, syntheticDaily());
+		const before = await runCityTemperatureHistory({ city: 'Portland', start_year: 2021 }, env.CLIMATE_KV);
+		expect(before.points).toEqual([
+			{ x: 2021, y: 10 },
+			{ x: 2022, y: 11 },
+			{ x: 2023, y: 12 },
+		]);
+
+		vi.setSystemTime(new Date('2025-01-10T12:00:00Z'));
+		const after = await runCityTemperatureHistory({ city: 'Portland', start_year: 2021 }, env.CLIMATE_KV);
+		expect(archiveRanges.slice(2).sort()).toEqual(['1940-01-01..2023-12-31', '2024-01-01..2025-01-10']);
+		expect(await env.CLIMATE_KV.get(keysFor(10.13, 2025).history)).not.toBeNull();
+		// 2023 moved from recent into history and 2024 is now complete —
+		// exactly one point per year, nothing from 2024's segments reused
+		expect(after.points).toEqual([
+			{ x: 2021, y: 10 },
+			{ x: 2022, y: 11 },
+			{ x: 2023, y: 12 },
+			{ x: 2024, y: 13 },
+		]);
+	});
+
+	it('waits for both segments before failing, leaving no fetch or KV write in flight', async () => {
+		// The fixture has no data for the recent segment's range at this
+		// date, so that segment throws while history is still being fetched
+		// and written. The tool must not reject until both have settled.
+		// (Promise.all used to reject early, which vitest-pool-workers caught
+		// as "Isolated storage failed" from the still-running KV write.)
+		vi.setSystemTime(new Date('2025-06-15T12:00:00Z'));
+		stubOpenMeteo(10.14);
+		await expect(runCityTemperatureHistory({ city: 'Portland', start_year: 2020 }, env.CLIMATE_KV)).rejects.toMatchObject({
+			toolErrorClass: 'tool_parse_failed',
+		});
+		expect(await env.CLIMATE_KV.get(keysFor(10.14, 2025).history)).not.toBeNull();
+	});
+
+	it('concatenates the segments exactly: same points as aggregating the whole range at once', async () => {
 		stubOpenMeteo(10.22);
 		const input = { city: 'Portland', granularity: 'monthly', start_year: 2022, end_year: 2023 };
 		const fromFetch = await runCityTemperatureHistory(input, env.CLIMATE_KV);
 		const fromCache = await runCityTemperatureHistory(input, env.CLIMATE_KV);
-		expect(fromCache).toEqual(fromFetch);
 		expect(fromFetch.points).toEqual(aggregateArchive(archiveFixture, 'monthly'));
+		expect(fromCache).toEqual(fromFetch);
+	});
+
+	it('keeps history far longer than recent', async () => {
+		stubOpenMeteo(10.23);
+		await runCityTemperatureHistory({ city: 'Portland' }, env.CLIMATE_KV);
+		const listed = await env.CLIMATE_KV.list({ prefix: 'om:v2:' });
+		const expiration = (key: string) => listed.keys.find((entry) => entry.name === key)?.expiration ?? 0;
+		const gap = expiration(keysFor(10.23).history) - expiration(keysFor(10.23).recent);
+		expect(gap).toBe(HISTORY_TTL_SECONDS - RECENT_TTL_SECONDS);
 	});
 
 	it('leaves weekly uncached, fetching only the requested range each time', async () => {
-		const archiveUrls = stubOpenMeteo(10.33);
+		const archiveRanges = stubOpenMeteo(10.33);
 		const input = { city: 'Portland', granularity: 'weekly', start_year: 2022, end_year: 2023 };
 		await runCityTemperatureHistory(input, env.CLIMATE_KV);
 		await runCityTemperatureHistory(input, env.CLIMATE_KV);
-		expect(archiveUrls).toHaveLength(2);
-		expect(archiveUrls[0]).toContain('start_date=2022-01-01');
-		expect(await env.CLIMATE_KV.get(cacheKeyFor(10.33))).toBeNull();
+		expect(archiveRanges).toEqual(['2022-01-01..2023-12-31', '2022-01-01..2023-12-31']);
+		expect(await env.CLIMATE_KV.get(keysFor(10.33).history)).toBeNull();
 	});
 
-	it('treats a corrupt cache entry as a miss and refetches', async () => {
-		const archiveUrls = stubOpenMeteo(10.44);
-		await env.CLIMATE_KV.put(cacheKeyFor(10.44), '{"annual":');
+	it('treats a corrupt cache entry as a miss and refetches that segment only', async () => {
+		const archiveRanges = stubOpenMeteo(10.44);
+		await runCityTemperatureHistory({ city: 'Portland' }, env.CLIMATE_KV);
+		await env.CLIMATE_KV.put(keysFor(10.44).history, '{"annual":');
 		const result = await runCityTemperatureHistory({ city: 'Portland' }, env.CLIMATE_KV);
-		expect(archiveUrls).toHaveLength(1);
+		expect(archiveRanges.slice(2)).toEqual(['1940-01-01..2022-12-31']);
 		expect(result.points).toHaveLength(2);
 	});
 
 	it('still answers without a KV binding, fetching every time', async () => {
-		const archiveUrls = stubOpenMeteo(10.55);
+		const archiveRanges = stubOpenMeteo(10.55);
 		await runCityTemperatureHistory({ city: 'Portland' });
 		await runCityTemperatureHistory({ city: 'Portland' });
-		expect(archiveUrls).toHaveLength(2);
+		expect(archiveRanges).toHaveLength(4);
 	});
 
 	it('throws tool_parse_failed when the cached series has nothing in the requested range', async () => {
