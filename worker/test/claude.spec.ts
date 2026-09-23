@@ -274,6 +274,10 @@ describe('askClaude - error classification (step 16)', () => {
 describe('parseEnvelope - malformed output (R2)', () => {
 	const noResults = new Map<string, ToolDataResult>();
 
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	it('returns the generic fallback, not the prose, when Claude ignored the JSON rule', () => {
 		const result = parseEnvelope('CO2 is rising according to NOAA GML.', noResults);
 		expect(result).toEqual({ type: 'text', answer: FALLBACK_ANSWER });
@@ -292,6 +296,28 @@ describe('parseEnvelope - malformed output (R2)', () => {
 		const result = parseEnvelope('{"type":"chart","chartType":"li', noResults);
 		expect(result.type).toBe('text');
 		expect((result as { answer: string }).answer).toMatch(/something went wrong/);
+	});
+
+	it('returns the fallback for a well-formed envelope that fails validation (empty answer)', () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		expect(parseEnvelope('{"type":"text","answer":"   "}', noResults)).toEqual({ type: 'text', answer: FALLBACK_ANSWER });
+	});
+
+	it('validates charts after data injection: a non-finite injected point degrades to the fallback', () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const results = new Map([['toolu_nan', { ...sampleResult, points: [{ x: 1979, y: NaN }] }]]);
+		const chart = JSON.stringify({
+			type: 'chart',
+			chartType: 'line',
+			title: 'T',
+			xLabel: 'x',
+			yLabel: 'y',
+			datasets: [{ label: 'CO2', sourceToolCallId: 'toolu_nan' }],
+			explanation: 'CO2 has risen (NOAA GML).',
+		});
+		expect(parseEnvelope(chart, results)).toEqual({ type: 'text', answer: FALLBACK_ANSWER });
+		const logged = JSON.parse(errorSpy.mock.calls[0][0] as string) as Record<string, unknown>;
+		expect(logged).toEqual({ class: 'claude_malformed_json', message: 'envelope failed validation (type chart)' });
 	});
 
 	it('strips a markdown fence before parsing', () => {

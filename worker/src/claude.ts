@@ -23,6 +23,7 @@ import type { ChartDataset, ClaudeChartDataset, ToolDataResult, WorkerResponse }
 import { SYSTEM_PROMPT } from './prompts';
 import { ToolError } from './tools/errors';
 import { logError, type ErrorClass } from './log';
+import { isWorkerResponse } from './validate';
 import { allToolDefinitions, runTool } from './tools/registry';
 
 export const MODEL = 'claude-sonnet-5';
@@ -164,11 +165,23 @@ function isChartDatasetList(value: unknown): value is ClaudeChartDataset[] {
 }
 
 /**
- * Parse Claude's final text into the public envelope (Section 4).
- * Malformed output degrades to the R2 fallback text envelope — never a
- * crash. Exported for direct testing.
+ * Parse Claude's final text into the public envelope (Section 4), then
+ * validate the result — after chart data injection — with the same
+ * strict validator the answer cache applies to KV reads (`validate.ts`).
+ * Malformed or invalid output degrades to the R2 fallback text envelope,
+ * never a crash. Exported for direct testing.
  */
 export function parseEnvelope(text: string, toolResults: Map<string, ToolDataResult>): WorkerResponse {
+	const envelope = buildEnvelope(text, toolResults);
+	if (isWorkerResponse(envelope)) return envelope;
+	// e.g. an empty answer, or a chart with an empty title — well-formed
+	// JSON that would still render as a broken bubble or card in iOS
+	logError('claude_malformed_json', { message: `envelope failed validation (type ${(envelope as { type: string }).type})` });
+	return { type: 'text', answer: FALLBACK_ANSWER };
+}
+
+/** Parse + chart data injection, before validation. */
+function buildEnvelope(text: string, toolResults: Map<string, ToolDataResult>): WorkerResponse {
 	// Defensive: strip a markdown fence if Claude wraps the JSON despite rule 5
 	const trimmed = text
 		.trim()

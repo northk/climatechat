@@ -5,7 +5,7 @@
  */
 
 import { env } from 'cloudflare:test';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
 import { cacheGet, cacheSet, cacheableQuestion, selectTtl } from '../src/cache';
 import { FALLBACK_ANSWER } from '../src/claude';
@@ -66,6 +66,55 @@ describe('cacheGet / cacheSet round trip', () => {
 		await cacheSet(env.CLIMATE_KV, messages, degraded);
 		expect(await cacheGet(env.CLIMATE_KV, messages)).toBeNull();
 		// A real answer to the same question still caches
+		await cacheSet(env.CLIMATE_KV, messages, textAnswer);
+		expect(await cacheGet(env.CLIMATE_KV, messages)).toEqual(textAnswer);
+	});
+});
+
+describe('cacheGet - runtime validation of stored entries (Codex review)', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	/** Cache a valid answer for `question`, then overwrite its entry in place with `raw`. */
+	async function plantEntry(question: string, raw: string): Promise<MessageParam[]> {
+		const messages = singleTurn(question);
+		await cacheSet(env.CLIMATE_KV, messages, textAnswer);
+		const { keys } = await env.CLIMATE_KV.list({ prefix: 'q:' });
+		expect(keys).toHaveLength(1);
+		await env.CLIMATE_KV.put(keys[0].name, raw);
+		return messages;
+	}
+
+	it.each([
+		['an older-schema entry', JSON.stringify({ kind: 'text', body: 'old shape' })],
+		['an empty answer', JSON.stringify({ type: 'text', answer: '' })],
+		[
+			'a chart with a null point',
+			JSON.stringify({
+				type: 'chart',
+				chartType: 'line',
+				title: 'T',
+				xLabel: 'x',
+				yLabel: 'y',
+				explanation: 'E',
+				datasets: [{ label: 'CO2', data: [{ x: 1979, y: null }] }],
+			}),
+		],
+		['corrupt JSON', '{"type":"text","ans'],
+	])('treats %s as a miss and logs kv_cache_failed without the key', async (_name, raw) => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const messages = await plantEntry('What is the current CO2 level? [validate]', raw);
+		expect(await cacheGet(env.CLIMATE_KV, messages)).toBeNull();
+		expect(errorSpy).toHaveBeenCalledTimes(1);
+		const logged = JSON.parse(errorSpy.mock.calls[0][0] as string) as Record<string, unknown>;
+		expect(logged).toEqual({ class: 'kv_cache_failed', message: 'answer cache entry failed validation, treating as a miss' });
+	});
+
+	it('leaves the bad entry for the next cacheSet to overwrite, rather than spending a KV write deleting it', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const messages = await plantEntry('What is the current CO2 level? [overwrite]', '{"type":"text","answer":""}');
+		expect(await cacheGet(env.CLIMATE_KV, messages)).toBeNull();
 		await cacheSet(env.CLIMATE_KV, messages, textAnswer);
 		expect(await cacheGet(env.CLIMATE_KV, messages)).toEqual(textAnswer);
 	});

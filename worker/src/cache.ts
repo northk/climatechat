@@ -11,7 +11,9 @@
 
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
 import { FALLBACK_ANSWER } from './claude';
+import { logError } from './log';
 import type { WorkerResponse } from './types';
+import { isWorkerResponse } from './validate';
 
 /** Current-state and city questions: data updates daily at most (8.2). */
 const CURRENT_TTL_SECONDS = 60 * 60;
@@ -55,18 +57,26 @@ async function cacheKey(question: string): Promise<string> {
 	return `q:${hex}`;
 }
 
-/** Read a cached envelope; null on miss or any multi-turn request. */
+/** Read a cached envelope; null on a miss, any multi-turn request, or an entry that fails validation. */
 export async function cacheGet(kv: KVNamespace, messages: MessageParam[]): Promise<WorkerResponse | null> {
 	const question = cacheableQuestion(messages);
 	if (!question) return null;
 	const stored = await kv.get(await cacheKey(question));
 	if (!stored) return null;
+	let parsed: unknown;
 	try {
-		return JSON.parse(stored) as WorkerResponse;
+		parsed = JSON.parse(stored);
 	} catch {
-		// A corrupt entry behaves like a miss; it will be overwritten
-		return null;
+		parsed = null;
 	}
+	if (isWorkerResponse(parsed)) return parsed;
+	// Corrupt, or from an older schema / a bad deploy / a manual edit
+	// (Codex review). Treated as a miss, not deleted: a delete would spend
+	// one of the 1,000 daily KV writes (R4), and the cacheSet after this
+	// miss overwrites the same key anyway. Logged without the key, which
+	// is a hash of the user's question.
+	logError('kv_cache_failed', { message: 'answer cache entry failed validation, treating as a miss' });
+	return null;
 }
 
 /**
