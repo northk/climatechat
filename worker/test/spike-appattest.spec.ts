@@ -67,16 +67,10 @@ describe('SPIKE 1 - CBOR libraries under workerd', () => {
 		console.log('[cbor-x] OK  x5c=' + att.x5c.length + ' authData=' + (obj.authData as Uint8Array).length + 'B');
 	});
 
-	it('cbor2 imports and decodes the attestation object', async () => {
-		const { decode } = await import('cbor2');
-		// cbor2's decode() returns `unknown` (cbor-x returns `any`). tsc requires
-		// this cast; eslint's type-aware rule disagrees. tsc wins.
-		// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
-		const obj = decode(b64(vector.attestationObject)) as Record<string, unknown>;
-		expect(obj.fmt).toBe('apple-appattest');
-		expect((obj.attStmt as { x5c: Uint8Array[] }).x5c.length).toBe(2);
-		console.log('[cbor2] OK  authData=' + (obj.authData as Uint8Array).length + 'B');
-	});
+	// cbor2 was measured here and also worked under workerd, but was REJECTED:
+	// it carries a runtime dependency where cbor-x has none. Finding recorded in
+	// app-attest-design.md §12 Q1; the test was removed along with the package so
+	// main does not carry dependencies we have decided against.
 });
 
 describe('SPIKE 2 - Apple vector replay', () => {

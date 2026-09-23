@@ -26,19 +26,15 @@ async function x5c(): Promise<Uint8Array[]> {
 	return obj.attStmt.x5c;
 }
 
-describe('ROUTE A - @peculiar/x509 with reflect-metadata polyfill', () => {
-	it('imports and parses once reflect-metadata is loaded first', async () => {
-		await import('reflect-metadata');
-		const { X509Certificate } = await import('@peculiar/x509');
-		const certs = await x5c();
-		const leaf = new X509Certificate(certs[0]);
-		console.log('[A] leaf subject: ' + leaf.subject);
-		const ext = leaf.getExtension('1.2.840.113635.100.8.2');
-		console.log('[A] extension 8.2 present: ' + !!ext);
-		expect(toB64(new Uint8Array(leaf.rawData))).toBe(vector.expectedLeafCert);
-	});
-});
-
+/**
+ * ROUTE A (@peculiar/x509 + a reflect-metadata polyfill) was measured here and
+ * REJECTED — the package pulls `tsyringe`, a DI container that throws
+ * "requires a reflect polyfill" on import under workerd. It works with the
+ * polyfill, but that is two extra dependencies (one a DI framework) on a
+ * security path, for no capability Route B lacks. Finding recorded in
+ * app-attest-design.md §12 Q2; the test was removed along with the packages so
+ * main does not carry dependencies we have decided against.
+ */
 describe('ROUTE B - @peculiar/asn1-x509 directly, no DI container', () => {
 	it('parses the certificate and finds the App Attest nonce extension', async () => {
 		const { AsnConvert } = await import('@peculiar/asn1-schema');
