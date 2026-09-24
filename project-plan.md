@@ -515,6 +515,18 @@ About **five default annual city questions use up the free tier's whole day**. A
 
 Open-Meteo would stay the source for non-US cities. Consider this before any wider release, or if 429s show up in practice.
 
+### R13 — An ambiguous city name silently resolves to the most populous match
+`get_city_temperature_history` geocodes the city name with Open-Meteo's geocoder (`count=1`) and uses the top result. The geocoder ranks by population. Checked 2026-09-24, plain **"Portland"** returns Portland, Oregon (pop. ~653k) ahead of Portland, Maine (~67k), Portland, Indiana and Portland, Texas. So a user in Maine who types just "Portland" gets Oregon's temperatures. Ambiguous names are common (Springfield, Columbus, Richmond, Kansas City, Birmingham UK vs. Birmingham, Alabama).
+
+**It's only partly visible to the user.** The tool labels the result with name and country only (`openMeteo.ts`: `${geocoded.name}, ${geocoded.countryCode}` → "Portland, US"), so neither Claude nor the user sees which *state* was used. A qualified query works: "Portland, Oregon" and "Portland, Maine" resolve correctly. But "Portland Oregon" (no comma) returns no results at all, and the tool reports that as `tool_input_invalid`.
+
+**Status: open, not fixed.** Options, cheapest first:
+1. **Add the region to the label**, using the geocoder's `admin1` field ("Portland, Oregon, US"), so Claude can state which Portland it used and the user can catch a wrong guess. A one-line change. It doesn't pick the right city, but it stops the wrong one from being silent.
+2. **Request several matches** (`count=5`), and when the top ones share a name, have the tool report the candidates so Claude can ask the user which one they meant. That's more reliable, but costs a clarifying round and needs a prompt rule for when to ask.
+3. **Resolve on the iOS side** (e.g. an autocomplete picker, or the device's location). That's a Phase 4 UI decision, and would need the UI Design Spec (Section 5) to cover it.
+
+Option 1 is worth doing regardless of the others. This interacts with the city cache (R12): the cache is keyed on the geocoded coordinates, so a wrong guess is cached as that city's data, which is correct for the city actually looked up, not a separate bug.
+
 ---
 
 ## 10. Decisions
