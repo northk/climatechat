@@ -77,11 +77,18 @@ export async function runSurfaceTemperature(input: unknown): Promise<ToolDataRes
 	}
 	const start = Number(start_year);
 	const end = Number(end_year);
-	const maxYear = new Date().getUTCFullYear();
-	if (!Number.isInteger(start) || !Number.isInteger(end) || start > end || start < CAG_FIRST_YEAR || end > maxYear + 1) {
+	// NCEI 404s any range ending in a future year, and an annual range made
+	// up only of the in-progress year (verified live, Codex review). That
+	// 404 reads to Claude like an outage and lands in the tool_fetch_failed
+	// outage signal, so reject such ranges here as bad input instead.
+	// Annual therefore ends at the last complete year, like the Open-Meteo
+	// city tool; monthly may include the current year's months so far.
+	const currentYear = new Date().getUTCFullYear();
+	const maxYear = scale === 'annual' ? currentYear - 1 : currentYear;
+	if (!Number.isInteger(start) || !Number.isInteger(end) || start > end || start < CAG_FIRST_YEAR || end > maxYear) {
 		throw new ToolError(
 			'tool_input_invalid',
-			`get_surface_temperature: start_year/end_year must be integers with ${CAG_FIRST_YEAR} <= start <= end <= ${maxYear + 1}`,
+			`get_surface_temperature: start_year/end_year must be integers with ${CAG_FIRST_YEAR} <= start <= end <= ${maxYear} (for ${scale} scale)`,
 		);
 	}
 
@@ -191,7 +198,10 @@ export const nceiToolDefinitions: Tool[] = [
 			type: 'object',
 			properties: {
 				start_year: { type: 'integer', minimum: CAG_FIRST_YEAR, description: 'First year of the range (1880 or later)' },
-				end_year: { type: 'integer', description: 'Last year of the range' },
+				end_year: {
+					type: 'integer',
+					description: 'Last year of the range: at most the current year for monthly, the last complete year for annual',
+				},
 				scale: {
 					type: 'string',
 					enum: ['monthly', 'annual'],
