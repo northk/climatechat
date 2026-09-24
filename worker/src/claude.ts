@@ -237,7 +237,16 @@ function buildEnvelope(text: string, toolResults: Map<string, ToolDataResult>): 
 					// explanation text, so nothing ungrounded gets served or cached.
 					return { type: 'text', answer: FALLBACK_ANSWER };
 				}
-				datasets.push({ label: dataset.label, data: result.points });
+				// source/description/unit come from the tool result, not Claude:
+				// Claude's label and yLabel are free text and can misname a
+				// series or its unit; these can't (Codex review)
+				datasets.push({
+					label: dataset.label,
+					source: result.source,
+					description: result.description,
+					unit: result.unit,
+					data: result.points,
+				});
 			}
 			return {
 				type: 'chart',

@@ -64,7 +64,18 @@ export interface ClaudeChartDataset {
 
 /** Public dataset: real data points, injected by the Worker. */
 export interface ChartDataset {
+	/** Claude-authored legend name — short, but not authoritative */
 	label: string;
+	/**
+	 * Worker-injected from the tool result, never Claude-authored (Codex
+	 * review): the citation name, e.g. "NOAA GML". The iOS chart card shows
+	 * attribution from this, not from Claude's prose.
+	 */
+	source: string;
+	/** Worker-injected: what the series is, e.g. "Global atmospheric CO2 (annual mean)" */
+	description: string;
+	/** Worker-injected: the y unit, e.g. "ppm". Authoritative over the chart's free-text yLabel. */
+	unit: string;
 	data: ChartPoint[];
 }
 

@@ -165,7 +165,7 @@ Claude's own JSON output names *which* dataset to chart; it never re-types the d
   "chartType": "line",
   "title": "Global Temperature Anomaly (1880–2024)",
   "xLabel": "Year",
-  "yLabel": "°C anomaly vs. 1951–1980 average",
+  "yLabel": "°C anomaly vs. 1901–2000 average",
   "datasets": [
     { "label": "Temperature anomaly", "sourceToolCallId": "toolu_01Abc..." }
   ],
@@ -181,16 +181,30 @@ Before returning the response to the iOS app, the Worker (in `claude.ts`) resolv
   "chartType": "line",
   "title": "Global Temperature Anomaly (1880–2024)",
   "xLabel": "Year",
-  "yLabel": "°C anomaly vs. 1951–1980 average",
+  "yLabel": "°C anomaly vs. 1901–2000 average",
   "datasets": [
     {
       "label": "Temperature anomaly",
+      "source": "NOAA NCEI (NOAAGlobalTemp)",
+      "description": "Global land+ocean surface temperature anomaly vs. 1901–2000 average (annual)",
+      "unit": "°C",
       "data": [{ "x": 1880, "y": -0.16 }, { "x": 1881, "y": -0.08 }]
     }
   ],
   "explanation": "The chart shows Earth has warmed approximately 1.2°C since the late 19th century."
 }
 ```
+
+**Authoritative metadata vs. Claude's wording (Codex review, 2026-09-24).** Each public dataset carries `source`, `description` and `unit`, which the Worker copies from the referenced tool result. Claude never writes them. Claude's own fields (`title`, `xLabel`, `yLabel`, each dataset's `label`, `explanation`) are free text and can be wrong: an earlier version of this very example had Claude's `yLabel` claim a 1951–1980 baseline for data that's really relative to 1901–2000. So the iOS chart card must:
+- show **attribution from each dataset's `source`** (and `description`), never by parsing Claude's prose
+- take the **axis unit from the datasets' `unit`**, treating `yLabel` as a descriptive title only
+- keep `label` as the short legend name, with `description` available as the authoritative "what is this series"
+
+The Worker doesn't try to validate Claude's `yLabel` text against the unit, because matching free text like "°C anomaly vs. …" against "°C" is fragile. Making the app read units from the datasets makes the check unnecessary.
+
+**Mixed units** (e.g. CO2 in ppm and methane in ppb on one chart) are possible, since Claude may chart two tools' results together. The datasets' `unit` fields make that detectable. How to *render* it (two axes, separate charts, or units in the legend) is a UI Design Spec decision (Section 5 (b)).
+
+`validate.ts` requires `source`, `description` and `unit` to be non-empty. That also turns any cached chart from before this change into a cache miss (R2).
 
 Only this expanded shape ever reaches the iOS app — `sourceToolCallId` is an internal Claude↔Worker contract, not part of the public API. If a series needs downsampling for chart rendering (see R6), the Worker does that here too, after resolving the raw data and before injecting it into the envelope.
 
@@ -208,7 +222,7 @@ Swift `Codable` structs will decode the expanded shape directly. `ClimateChartDa
 
 **What the completed spec will contain (all TBD):**
 - (a) Empty state / first launch — TBD, including tappable example questions
-- (b) Chart card treatment — TBD (title, plot, source attribution, insets)
+- (b) Chart card treatment — TBD (title, plot, source attribution, insets). Attribution and units must come from each dataset's Worker-injected `source` / `description` / `unit`, never from Claude's `yLabel` or prose (Section 4). Must also decide how a chart whose datasets have **different units** is drawn (two axes, separate charts, or units in the legend)
 - (c) Refusal and error state visual treatment — TBD
 - (d) Semantic color palette — TBD (semantic names only, e.g. `accent` / `secondaryBackground` — no hex values, so dark mode works)
 - (e) App icon and identity — TBD
