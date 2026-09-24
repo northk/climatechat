@@ -10,6 +10,7 @@
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
 import { ToolError, fetchOk, fetchJson, readTextBody } from './errors';
+import { parseNumber } from './parse';
 
 const CAG_BASE = 'https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean';
 const OHC_BASE = 'https://www.ncei.noaa.gov/data/oceans/woa/DATA_ANALYSIS/3M_HEAT_CONTENT/DATA/basin/yearly';
@@ -39,8 +40,10 @@ export function parseCagJson(body: unknown): ChartPoint[] {
 
 	const points: ChartPoint[] = [];
 	for (const [key, value] of Object.entries(data)) {
-		const departure = Number(value?.departure);
-		if (!Number.isFinite(departure)) continue;
+		// Strict: a null or "" departure is a missing value, not a 0 anomaly
+		// (Codex review). Genuine 0 departures do occur and are kept.
+		const departure = parseNumber(value?.departure);
+		if (departure === null) continue;
 
 		let x: number;
 		if (/^\d{4}$/.test(key)) {
@@ -136,9 +139,14 @@ export function parseOhcDat(text: string, basinColumn: string): ChartPoint[] {
 	const points: ChartPoint[] = [];
 	for (const line of lines.slice(1)) {
 		const cells = line.split(/\s+/);
-		const year = Number(cells[yearIndex]);
-		const value = Number(cells[basinIndex]);
-		if (Number.isFinite(year) && Number.isFinite(value)) {
+		// Whitespace-delimited, so a missing field doesn't leave an empty
+		// cell — it shifts every later column left, and basinIndex would
+		// read a neighbouring (e.g. standard-error) column. Only rows with
+		// exactly the header's column count are trustworthy.
+		if (cells.length !== header.length) continue;
+		const year = parseNumber(cells[yearIndex]);
+		const value = parseNumber(cells[basinIndex]);
+		if (year !== null && value !== null) {
 			points.push({ x: Math.floor(year), y: value });
 		}
 	}

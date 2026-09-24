@@ -28,6 +28,19 @@ describe('parseSeaIceCsv - January fixture (1979-2026)', () => {
 });
 
 describe('parseSeaIceCsv - resilience', () => {
+	it('skips a row with a blank year cell instead of placing it at year 0', () => {
+		const csv = [
+			'year, mo,source_dataset, region, extent,   area',
+			'1979,  1,    NSIDC-0051,      N,  15.41,  12.41',
+			'    ,  1,    NSIDC-0051,      N,  14.86,  11.94',
+			'1981,  1,    NSIDC-0051,      N,  15.10,  12.10',
+		].join('\n');
+		expect(parseSeaIceCsv(csv)).toEqual([
+			{ x: 1979, y: 15.41 },
+			{ x: 1981, y: 15.1 },
+		]);
+	});
+
 	it('skips -9999 missing-value sentinel rows', () => {
 		const withSentinel = [
 			'year, mo,source_dataset, region, extent, area',

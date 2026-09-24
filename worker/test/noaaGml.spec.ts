@@ -41,6 +41,14 @@ describe('parseGmlCsv - annual shape (co2_annmean_gl.csv fixture)', () => {
 });
 
 describe('parseGmlCsv - resilience', () => {
+	it('skips a row with a blank x cell instead of placing it at year 0', () => {
+		const csv = ['year,mean,unc', '1979,336.85,0.10', ' ,338.91,0.07', '1981,339.93,0.08'].join('\n');
+		expect(parseGmlCsv(csv, 'annual')).toEqual([
+			{ x: 1979, y: 336.85 },
+			{ x: 1981, y: 339.93 },
+		]);
+	});
+
 	it('locates columns by header name, not position', () => {
 		const reordered = ['average,year,month,decimal', '340.5,1980,1,1980.042'].join('\n');
 		expect(parseGmlCsv(reordered, 'monthly')).toEqual([{ x: 1980.042, y: 340.5 }]);
