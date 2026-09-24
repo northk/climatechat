@@ -17,10 +17,12 @@ import {
 	sliceSeries,
 	placeLabel,
 	ambiguousAlternatives,
+	qualifierRetries,
 	type GeocodedCity,
 } from '../src/tools/openMeteo';
 import geocodeRaw from './fixtures/open_meteo_geocode.json?raw';
 import ambiguousGeocodeRaw from './fixtures/open_meteo_geocode_ambiguous.json?raw';
+import qualifierRetryGeocodeRaw from './fixtures/open_meteo_geocode_qualifier_retry.json?raw';
 import archiveRaw from './fixtures/open_meteo_archive.json?raw';
 
 const archiveFixture: unknown = JSON.parse(archiveRaw);
@@ -40,6 +42,13 @@ describe('parseGeocodeJson - Portland fixture', () => {
 		// The geocoding API returns {} (no results key) for unknown names
 		expect(() => parseGeocodeJson({}, 'Xyzzyville')).toThrow(/no results for city "Xyzzyville"/);
 		expect(() => parseGeocodeJson({ results: [] }, 'Xyzzyville')).toThrow(/no results/);
+	});
+
+	it('tells Claude to qualify with a comma only for a multi-word name without one', () => {
+		const hint = /put it after a comma, e\.g\. "Portland, Oregon"/;
+		expect(() => parseGeocodeJson({}, 'Portlnd Oregon')).toThrow(hint);
+		expect(() => parseGeocodeJson({}, 'Portlnd')).not.toThrow(hint);
+		expect(() => parseGeocodeJson({}, 'Portlnd, Oregon')).not.toThrow(hint);
 	});
 
 	it('throws on a malformed result entry', () => {
@@ -275,6 +284,85 @@ describe('runCityTemperatureHistory - ambiguous names end to end (R13)', () => {
 		const result = await runCityTemperatureHistory({ city: 'Paris', ...weekly });
 		expect(result.description).toContain('Paris, Île-de-France Region, FR');
 		expect('alsoMatches' in result).toBe(false);
+	});
+});
+
+describe('qualifierRetries', () => {
+	it('tries a comma before the last word, then before the last two', () => {
+		expect(qualifierRetries('Kansas City Missouri')).toEqual(['Kansas City, Missouri', 'Kansas, City Missouri']);
+		expect(qualifierRetries('Springfield North Carolina')).toEqual(['Springfield North, Carolina', 'Springfield, North Carolina']);
+	});
+
+	it('offers only the one-word split for a two-word name', () => {
+		expect(qualifierRetries('Portland Oregon')).toEqual(['Portland, Oregon']);
+	});
+
+	it('collapses repeated whitespace', () => {
+		expect(qualifierRetries('Portland   OR')).toEqual(['Portland, OR']);
+	});
+
+	it('offers nothing for a single word or an already-qualified name', () => {
+		expect(qualifierRetries('Portland')).toEqual([]);
+		expect(qualifierRetries('Portland, Oregon')).toEqual([]);
+	});
+});
+
+describe('runCityTemperatureHistory - comma retries end to end (R13)', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	// Live geocoder responses keyed by query, captured 2026-09-24
+	const responses = JSON.parse(qualifierRetryGeocodeRaw) as Record<string, unknown>;
+
+	/** Serve each geocoder query its captured response ({} if not captured); record the queries in order. */
+	function stubGeocoderByQuery(): string[] {
+		const queries: string[] = [];
+		vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+			const url = new URL(input instanceof Request ? input.url : String(input));
+			if (url.hostname.startsWith('geocoding-api')) {
+				const query = url.searchParams.get('name') ?? '';
+				queries.push(query);
+				return Promise.resolve(Response.json(responses[query] ?? {}));
+			}
+			return Promise.resolve(new Response(archiveRaw, { status: 200 }));
+		});
+		return queries;
+	}
+
+	const weekly = { granularity: 'weekly', start_year: 2022, end_year: 2023 };
+
+	it.each([
+		['Portland Oregon', ['Portland Oregon', 'Portland, Oregon'], 'Portland, Oregon, US'],
+		['Portland OR', ['Portland OR', 'Portland, OR'], 'Portland, Oregon, US'],
+		['Kansas City Missouri', ['Kansas City Missouri', 'Kansas City, Missouri'], 'Kansas City, Missouri, US'],
+		[
+			'Springfield North Carolina',
+			['Springfield North Carolina', 'Springfield North, Carolina', 'Springfield, North Carolina'],
+			'Springfield, North Carolina, US',
+		],
+	])('"%s" resolves via a comma retry, stopping at the first split that matches', async (city, expectedQueries, place) => {
+		const queries = stubGeocoderByQuery();
+		const result = await runCityTemperatureHistory({ city, ...weekly });
+		expect(queries).toEqual(expectedQueries);
+		expect(result.description).toContain(place);
+		// The matched query was qualified, so no "also matches" list
+		expect('alsoMatches' in result).toBe(false);
+	});
+
+	it('makes no retries when the name is found as sent', async () => {
+		const queries = stubGeocoderByQuery();
+		await runCityTemperatureHistory({ city: 'Portland, Oregon', ...weekly });
+		expect(queries).toEqual(['Portland, Oregon']);
+	});
+
+	it('when every split fails (a typo), errors with the original query and the comma hint', async () => {
+		const queries = stubGeocoderByQuery();
+		await expect(runCityTemperatureHistory({ city: 'Portlnd Oregon', ...weekly })).rejects.toMatchObject({
+			toolErrorClass: 'tool_input_invalid',
+			message: expect.stringMatching(/no results for city "Portlnd Oregon"\. If it names a state/) as string,
+		});
+		expect(queries).toEqual(['Portlnd Oregon', 'Portlnd, Oregon']);
 	});
 });
 

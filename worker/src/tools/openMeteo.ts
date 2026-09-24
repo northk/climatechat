@@ -156,13 +156,48 @@ export function parseGeocodeJson(body: unknown, cityQuery: string): GeocodedCity
 		// tool_input_invalid, not tool_parse_failed: an unresolved city is
 		// almost always a bad/obscure query. A geocoder outage would surface
 		// as a non-2xx or invalid JSON instead. (Pre-Phase-4 review #8.)
-		throw new ToolError('tool_input_invalid', `Open-Meteo geocoding: no results for city "${cityQuery}"`);
+		// For a multi-word name without a comma, say how to qualify it: the
+		// geocoder only reads a state/country after a comma, and the tool's
+		// own comma retries (qualifierRetries) have already failed by now
+		const hint =
+			!cityQuery.includes(',') && /\s/.test(cityQuery)
+				? '. If it names a state, region, or country, put it after a comma, e.g. "Portland, Oregon"'
+				: '';
+		throw new ToolError('tool_input_invalid', `Open-Meteo geocoding: no results for city "${cityQuery}"${hint}`);
 	}
 	const city = toGeocodedCity(first);
 	if (!city) {
 		throw new ToolError('tool_parse_failed', 'Open-Meteo geocoding: malformed result entry');
 	}
 	return city;
+}
+
+/**
+ * Comma placements to try, in order, when a multi-word name without a
+ * comma finds nothing (R13): before the last word, then before the last
+ * two. The geocoder only treats text after a comma as a qualifier, so
+ * "Portland Oregon" finds nothing while "Portland, Oregon" works. Covers
+ * "Portland Oregon", "Portland OR", "Kansas City Missouri" (last word) and
+ * "Springfield North Carolina" (last two). A wrong split practically never
+ * matches: the qualifier must equal a region or country name exactly
+ * ("Kansas, City Missouri" and "Springfield North, Carolina" both return
+ * nothing, checked live).
+ */
+export function qualifierRetries(cityQuery: string): string[] {
+	if (cityQuery.includes(',')) return [];
+	const words = cityQuery.split(/\s+/).filter((word) => word.length > 0);
+	const retries: string[] = [];
+	for (const qualifierWords of [1, 2]) {
+		if (words.length > qualifierWords) {
+			retries.push(`${words.slice(0, -qualifierWords).join(' ')}, ${words.slice(-qualifierWords).join(' ')}`);
+		}
+	}
+	return retries;
+}
+
+function hasGeocodeResults(body: unknown): boolean {
+	const results = (body as GeocodeResponse | null)?.results;
+	return Array.isArray(results) && results.length > 0;
 }
 
 /**
@@ -489,10 +524,26 @@ export async function runCityTemperatureHistory(input: unknown, kv?: KVNamespace
 	}
 
 	const cityQuery = city.trim();
-	const geocodeUrl = `${GEOCODE_URL}?name=${encodeURIComponent(cityQuery)}&count=${GEOCODE_MATCHES}`;
-	const geocodeBody = await fetchJson(geocodeUrl, 'Open-Meteo geocoding');
+	const geocode = (query: string) =>
+		fetchJson(`${GEOCODE_URL}?name=${encodeURIComponent(query)}&count=${GEOCODE_MATCHES}`, 'Open-Meteo geocoding');
+	let geocodeBody = await geocode(cityQuery);
+	// The query the geocoder actually matched: a successful comma retry
+	// makes it qualified, so no "also matches" list is offered for it
+	let matchedQuery = cityQuery;
+	if (!hasGeocodeResults(geocodeBody)) {
+		// Sequential on purpose: stop at the first split that finds the city
+		for (const retry of qualifierRetries(cityQuery)) {
+			const retryBody = await geocode(retry);
+			if (hasGeocodeResults(retryBody)) {
+				geocodeBody = retryBody;
+				matchedQuery = retry;
+				break;
+			}
+		}
+	}
+	// Errors name the query as Claude sent it
 	const geocoded = parseGeocodeJson(geocodeBody, cityQuery);
-	const alsoMatches = ambiguousAlternatives(geocodeBody, geocoded, cityQuery);
+	const alsoMatches = ambiguousAlternatives(geocodeBody, geocoded, matchedQuery);
 
 	let points: ChartPoint[];
 	if (granularity === 'weekly') {
