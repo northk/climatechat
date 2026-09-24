@@ -405,6 +405,15 @@ describe('Open-Meteo tool definition', () => {
 		expect(schema.properties.granularity.enum).toEqual(['annual', 'monthly', 'weekly']);
 		expect(schema.required).toEqual(['city']);
 	});
+
+	it('limits the city to Earth places, with an explicit exception for same-named towns', () => {
+		// Guards the wording, not Claude's behavior (that needs the live
+		// checks in plan step 41). Dropping the exception would risk Claude
+		// refusing to look up Jupiter, Florida because "Jupiter" is a planet.
+		const city = (openMeteoToolDefinitions[0].input_schema as { properties: { city: { description: string } } }).properties.city;
+		expect(city.description).toContain('must be a place on Earth');
+		expect(city.description).toContain('Jupiter, Florida');
+	});
 });
 
 describe('sliceSeries', () => {

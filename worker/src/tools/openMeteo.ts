@@ -594,7 +594,10 @@ export const openMeteoToolDefinitions: Tool[] = [
 					type: 'string',
 					description:
 						'City name. Whenever the user gave a state, region, or country, include it after a comma: ' +
-						'"Portland, Maine", "Paris, France". The comma is required ("Portland Maine" finds nothing).',
+						'"Portland, Maine", "Paris, France". The comma is required ("Portland Maine" finds nothing). ' +
+						'The city must be a place on Earth. If the user means a planet, moon, or other body in space, ' +
+						'do not call this tool. Earth places that share those names, such as Jupiter, Florida or ' +
+						'Mercury, Nevada, are fine: include the state.',
 				},
 				granularity: {
 					type: 'string',
