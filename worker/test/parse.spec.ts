@@ -14,12 +14,23 @@ describe('parseNumber', () => {
 		['0', 0],
 		['-0.12', -0.12],
 		['  1.09 ', 1.09],
+		['\t2\n', 2],
 		['+3', 3],
 		['.5', 0.5],
 		['5.', 5],
 		['1e3', 1000],
 		['2.5E-2', 0.025],
 	])('accepts %j → %j', (input, expected) => {
+		expect(parseNumber(input)).toBe(expected);
+	});
+
+	// Documented, harmless leniency inherited from Number(): no upstream sends
+	// these, and one that did would still be a real value, not a missing one
+	it.each([
+		['0x10', 16],
+		['0b11', 3],
+		['0o17', 15],
+	])('accepts the non-decimal literal %j → %j', (input, expected) => {
 		expect(parseNumber(input)).toBe(expected);
 	});
 
@@ -37,8 +48,10 @@ describe('parseNumber', () => {
 		['Infinity', Infinity],
 		['"NaN"', 'NaN'],
 		['"Infinity"', 'Infinity'],
-		['hex', '0x10'],
-		['a trailing unit', '1.2C'],
+		['"-Infinity"', '-Infinity'],
+		['a trailing unit (parseFloat would read 1.2)', '1.2C'],
+		['a numeric separator (parseFloat would read 1)', '1_000'],
+		['a thousands comma (parseFloat would read 1)', '1,000'],
 		['two numbers', '1 2'],
 		['an overflowing exponent', '1e999'],
 		['a lone sign', '-'],
