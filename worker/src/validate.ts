@@ -8,9 +8,10 @@
  *     buggy deploy, or a manual KV edit would otherwise be served as-is
  *     for up to its 24h TTL
  *
- * Strict on what iOS renders: non-empty answer / title / explanation /
- * dataset label text, at least one dataset each with at least one point,
- * and finite numbers — `JSON.stringify(NaN)` is `null`, which the iOS
+ * Strict on what iOS renders: non-empty answer / title / explanation
+ * text, non-empty dataset label / source / description / unit, at least
+ * one dataset each with at least one point, and finite numbers —
+ * `JSON.stringify(NaN)` is `null`, which the iOS
  * Codable structs (non-optional Double) fail to decode. Axis labels only
  * need to be strings: an empty one is a legitimate unlabeled axis.
  */
@@ -32,6 +33,9 @@ function isChartDataset(value: unknown): value is ChartDataset {
 		typeof dataset === 'object' &&
 		dataset !== null &&
 		isNonEmptyString(dataset.label) &&
+		isNonEmptyString(dataset.source) &&
+		isNonEmptyString(dataset.description) &&
+		isNonEmptyString(dataset.unit) &&
 		Array.isArray(dataset.data) &&
 		dataset.data.length > 0 &&
 		dataset.data.every(isChartPoint)

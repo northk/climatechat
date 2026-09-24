@@ -7,7 +7,7 @@ const claudeChart: ClaudeChartResponse = {
 	chartType: 'line',
 	title: 'Global Temperature Anomaly (1880–2024)',
 	xLabel: 'Year',
-	yLabel: '°C anomaly vs. 1951–1980 average',
+	yLabel: '°C anomaly vs. 1901–2000 average',
 	datasets: [{ label: 'Temperature anomaly', sourceToolCallId: 'toolu_01Abc' }],
 	explanation: 'The chart shows Earth has warmed approximately 1.2°C since the late 19th century.',
 };
@@ -17,10 +17,13 @@ const publicChart: ChartResponse = {
 	chartType: 'line',
 	title: 'Global Temperature Anomaly (1880–2024)',
 	xLabel: 'Year',
-	yLabel: '°C anomaly vs. 1951–1980 average',
+	yLabel: '°C anomaly vs. 1901–2000 average',
 	datasets: [
 		{
 			label: 'Temperature anomaly',
+			source: 'NOAA NCEI (NOAAGlobalTemp)',
+			description: 'Global land+ocean surface temperature anomaly vs. 1901–2000 average (annual)',
+			unit: '°C',
 			data: [
 				{ x: 1880, y: -0.16 },
 				{ x: 1881, y: -0.08 },

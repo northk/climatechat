@@ -16,6 +16,9 @@ const chart = {
 	datasets: [
 		{
 			label: 'CO2',
+			source: 'NOAA GML',
+			description: 'Global atmospheric CO2 (annual mean)',
+			unit: 'ppm',
 			data: [
 				{ x: 1979, y: 336.85 },
 				{ x: 1980, y: 338.91 },
@@ -23,6 +26,11 @@ const chart = {
 		},
 	],
 };
+
+/** A complete, valid dataset with some fields overridden — so each rejection test isolates one defect. */
+function dataset(overrides: Record<string, unknown>): Record<string, unknown> {
+	return { ...structuredClone(chart.datasets[0]), ...overrides };
+}
 
 /** A copy of the valid chart with one change applied. */
 function chartWith(change: (copy: Record<string, unknown>) => void): unknown {
@@ -78,10 +86,19 @@ describe('isWorkerResponse - rejects', () => {
 		expect(isWorkerResponse(chartWith((c) => (c.datasets = [{ label: 'CO2', sourceToolCallId: 'toolu_1' }])))).toBe(false);
 	});
 
+	it.each(['source', 'description', 'unit'])('a dataset missing or with an empty Worker-injected %s', (field) => {
+		expect(isWorkerResponse(chartWith((c) => delete (c.datasets as Record<string, unknown>[])[0][field]))).toBe(false);
+		expect(isWorkerResponse(chartWith((c) => ((c.datasets as Record<string, unknown>[])[0][field] = ' ')))).toBe(false);
+	});
+
+	it('a pre-change cached chart (label + data only) — so old KV entries become misses', () => {
+		expect(isWorkerResponse(chartWith((c) => (c.datasets = [{ label: 'CO2', data: [{ x: 1979, y: 336.85 }] }])))).toBe(false);
+	});
+
 	it('no datasets, a dataset with no points, or an empty dataset label', () => {
 		expect(isWorkerResponse(chartWith((c) => (c.datasets = [])))).toBe(false);
-		expect(isWorkerResponse(chartWith((c) => (c.datasets = [{ label: 'CO2', data: [] }])))).toBe(false);
-		expect(isWorkerResponse(chartWith((c) => (c.datasets = [{ label: '', data: [{ x: 1, y: 2 }] }])))).toBe(false);
+		expect(isWorkerResponse(chartWith((c) => (c.datasets = [dataset({ data: [] })])))).toBe(false);
+		expect(isWorkerResponse(chartWith((c) => (c.datasets = [dataset({ label: '' })])))).toBe(false);
 	});
 
 	it.each([
@@ -91,6 +108,6 @@ describe('isWorkerResponse - rejects', () => {
 		['a numeric string', { x: '1979', y: 1 }],
 		['a missing coordinate', { x: 1979 }],
 	])('a point with %s', (_name, point) => {
-		expect(isWorkerResponse(chartWith((c) => (c.datasets = [{ label: 'CO2', data: [{ x: 1978, y: 335 }, point] }])))).toBe(false);
+		expect(isWorkerResponse(chartWith((c) => (c.datasets = [dataset({ data: [{ x: 1978, y: 335 }, point] })])))).toBe(false);
 	});
 });

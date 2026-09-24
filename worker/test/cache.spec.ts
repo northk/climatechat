@@ -98,7 +98,15 @@ describe('cacheGet - runtime validation of stored entries (Codex review)', () =>
 				xLabel: 'x',
 				yLabel: 'y',
 				explanation: 'E',
-				datasets: [{ label: 'CO2', data: [{ x: 1979, y: null }] }],
+				datasets: [
+					{
+						label: 'CO2',
+						source: 'NOAA GML',
+						description: 'Global atmospheric CO2 (annual mean)',
+						unit: 'ppm',
+						data: [{ x: 1979, y: null }],
+					},
+				],
 			}),
 		],
 		['corrupt JSON', '{"type":"text","ans'],

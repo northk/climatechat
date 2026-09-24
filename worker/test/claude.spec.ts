@@ -118,6 +118,10 @@ describe('askClaude - tool-use loop', () => {
 			datasets: [
 				{
 					label: 'CO2',
+					// Worker-injected from the tool result, not from Claude
+					source: 'NOAA GML',
+					description: 'Global atmospheric CO2 (annual mean)',
+					unit: 'ppm',
 					data: [
 						{ x: 1979, y: 336.85 },
 						{ x: 1980, y: 338.91 },
@@ -369,6 +373,38 @@ describe('parseEnvelope - malformed output (R2)', () => {
 		const datasets = (result as { datasets: { data: unknown[] }[] }).datasets;
 		expect(datasets[0].data).toHaveLength(2);
 		expect(datasets[1].data).toHaveLength(1);
+	});
+
+	it("takes each dataset's source, description, and unit from its own tool result, not from Claude's label", () => {
+		// Claude mislabels the NCEI series as "CO2" — the injected metadata
+		// still says what the data really is
+		const other: ToolDataResult = {
+			source: 'NOAA NCEI (NOAAGlobalTemp)',
+			description: 'Global land+ocean surface temperature anomaly vs. 1901–2000 average (annual)',
+			unit: '°C',
+			points: [{ x: 1979, y: 0.1 }],
+		};
+		const results = new Map([
+			['toolu_a', sampleResult],
+			['toolu_b', other],
+		]);
+		const chart = JSON.stringify({
+			type: 'chart',
+			chartType: 'line',
+			title: 'T',
+			xLabel: 'Year',
+			yLabel: '°F anomaly',
+			datasets: [
+				{ label: 'CO2', sourceToolCallId: 'toolu_a' },
+				{ label: 'CO2', sourceToolCallId: 'toolu_b' },
+			],
+			explanation: 'Both series rose.',
+		});
+		const result = parseEnvelope(chart, results) as { datasets: { label: string; source: string; description: string; unit: string }[] };
+		expect(result.datasets.map(({ label, source, description, unit }) => ({ label, source, description, unit }))).toEqual([
+			{ label: 'CO2', source: sampleResult.source, description: sampleResult.description, unit: sampleResult.unit },
+			{ label: 'CO2', source: other.source, description: other.description, unit: '°C' },
+		]);
 	});
 });
 
