@@ -3,8 +3,8 @@
  * live network calls — fixtures captured via curl (step 14).
  */
 
-import { describe, it, expect } from 'vitest';
-import { parseCagJson, parseOhcDat, nceiToolDefinitions, runOceanHeatContent } from '../src/tools/noaaNcei';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { parseCagJson, parseOhcDat, nceiToolDefinitions, runOceanHeatContent, runSurfaceTemperature } from '../src/tools/noaaNcei';
 import { ToolError } from '../src/tools/errors';
 import annualTempRaw from './fixtures/ncei_surface_temp_annual.json?raw';
 import monthlyTempRaw from './fixtures/ncei_surface_temp_monthly.json?raw';
@@ -126,6 +126,57 @@ describe('parseOhcDat - resilience', () => {
 
 	it('throws on an HTML error page', () => {
 		expect(() => parseOhcDat('<html>\n<body>404</body>\n</html>', 'WO')).toThrow(/NOAA NCEI OHC/);
+	});
+});
+
+describe('runSurfaceTemperature - year ceiling (Codex review)', () => {
+	// Pinned mid-2026. NCEI 404s ranges ending in a future year, and annual
+	// ranges made up only of the in-progress year (verified live 2026-09-24).
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	function pinDateAndStubFetch(): string[] {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2026-06-15T12:00:00Z'));
+		const urls: string[] = [];
+		vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+			urls.push(String(input instanceof Request ? input.url : input));
+			return Promise.resolve(Response.json({ data: { '2024': { departure: 1.29 }, '202601': { departure: 1.09 } } }));
+		});
+		return urls;
+	}
+
+	it('allows monthly ranges through the current year', async () => {
+		const urls = pinDateAndStubFetch();
+		await runSurfaceTemperature({ start_year: 2025, end_year: 2026, scale: 'monthly' });
+		expect(urls).toHaveLength(1);
+		expect(urls[0]).toMatch(/\/1\/0\/2025-2026\.json$/);
+	});
+
+	it('rejects a monthly range ending next year as input, without fetching', async () => {
+		const urls = pinDateAndStubFetch();
+		await expect(runSurfaceTemperature({ start_year: 2025, end_year: 2027, scale: 'monthly' })).rejects.toMatchObject({
+			toolErrorClass: 'tool_input_invalid',
+			message: expect.stringContaining('<= 2026 (for monthly scale)') as string,
+		});
+		expect(urls).toHaveLength(0);
+	});
+
+	it('allows annual ranges through the last complete year', async () => {
+		const urls = pinDateAndStubFetch();
+		await runSurfaceTemperature({ start_year: 2020, end_year: 2025, scale: 'annual' });
+		expect(urls[0]).toMatch(/\/12\/12\/2020-2025\.json$/);
+	});
+
+	it('rejects an annual range ending in the in-progress year, naming the last complete year', async () => {
+		const urls = pinDateAndStubFetch();
+		await expect(runSurfaceTemperature({ start_year: 2026, end_year: 2026, scale: 'annual' })).rejects.toMatchObject({
+			toolErrorClass: 'tool_input_invalid',
+			message: expect.stringContaining('<= 2025 (for annual scale)') as string,
+		});
+		expect(urls).toHaveLength(0);
 	});
 });
 
