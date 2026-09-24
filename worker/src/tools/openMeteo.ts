@@ -86,18 +86,70 @@ export interface GeocodedCity {
 	longitude: number;
 	/** e.g. "US" — included so Claude can disambiguate in its answer */
 	countryCode: string;
+	/** State / province / region (the geocoder's admin1), e.g. "Oregon"; "" if absent */
+	region: string;
+	/** null when the geocoder has no population for the place */
+	population: number | null;
+}
+
+interface GeocodeEntry {
+	name?: unknown;
+	latitude?: unknown;
+	longitude?: unknown;
+	country_code?: unknown;
+	admin1?: unknown;
+	population?: unknown;
 }
 
 interface GeocodeResponse {
-	results?: {
-		name?: unknown;
-		latitude?: unknown;
-		longitude?: unknown;
-		country_code?: unknown;
-	}[];
+	results?: GeocodeEntry[];
 }
 
-/** Parse a geocoding API response; throws if the city wasn't found. */
+/**
+ * How many matches to request. The geocoder (GeoNames data) ranks the top
+ * match by population, so "Portland" → Oregon; the rest are only used to
+ * spot an ambiguous name (R13). Still one geocoding call either way.
+ */
+const GEOCODE_MATCHES = 10;
+/**
+ * A same-named place counts as a real alternative when it's at least this
+ * share of the top match's population, or at least ALTERNATIVE_MIN_POPULATION
+ * outright. The share keeps Paris, Texas (25k vs 2.1M) out of every Paris
+ * answer while flagging Portland, Maine (~10% of Oregon's); the absolute
+ * floor rescues large cities dwarfed by a huge namesake (London, Ontario:
+ * 422k, under 5% of London, England).
+ */
+const ALTERNATIVE_MIN_SHARE = 0.05;
+const ALTERNATIVE_MIN_POPULATION = 100_000;
+/** At most this many alternatives are listed. */
+const MAX_ALTERNATIVES = 3;
+
+/** An entry → GeocodedCity, or null if it lacks a name or finite coordinates. */
+function toGeocodedCity(entry: GeocodeEntry | undefined): GeocodedCity | null {
+	if (!entry) return null;
+	const { name, latitude, longitude, country_code, admin1, population } = entry;
+	if (typeof name !== 'string' || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+	return {
+		name,
+		latitude: latitude as number,
+		longitude: longitude as number,
+		countryCode: typeof country_code === 'string' ? country_code : '',
+		region: typeof admin1 === 'string' ? admin1 : '',
+		population: typeof population === 'number' && Number.isFinite(population) ? population : null,
+	};
+}
+
+/**
+ * "Portland, Oregon, US": the place actually used, so Claude and the user
+ * can see which of several same-named places it is. The region is skipped
+ * when absent or identical to the name (e.g. "Singapore, Singapore").
+ */
+export function placeLabel(city: GeocodedCity): string {
+	const region = city.region && city.region !== city.name ? city.region : '';
+	return [city.name, region, city.countryCode].filter((part) => part.length > 0).join(', ');
+}
+
+/** Parse a geocoding API response into its top match; throws if the city wasn't found. */
 export function parseGeocodeJson(body: unknown, cityQuery: string): GeocodedCity {
 	const first = (body as GeocodeResponse | null)?.results?.[0];
 	if (!first) {
@@ -106,16 +158,47 @@ export function parseGeocodeJson(body: unknown, cityQuery: string): GeocodedCity
 		// as a non-2xx or invalid JSON instead. (Pre-Phase-4 review #8.)
 		throw new ToolError('tool_input_invalid', `Open-Meteo geocoding: no results for city "${cityQuery}"`);
 	}
-	const { name, latitude, longitude, country_code } = first;
-	if (typeof name !== 'string' || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+	const city = toGeocodedCity(first);
+	if (!city) {
 		throw new ToolError('tool_parse_failed', 'Open-Meteo geocoding: malformed result entry');
 	}
-	return {
-		name,
-		latitude: latitude as number,
-		longitude: longitude as number,
-		countryCode: typeof country_code === 'string' ? country_code : '',
-	};
+	return city;
+}
+
+/**
+ * Other sizeable places sharing the top match's exact name, as labels, most
+ * populous first (R13). Empty when the query was already qualified with a
+ * comma ("Portland, Maine" — the user said which one). Only exact name
+ * matches count: the geocoder also returns prefix matches like "Portland
+ * Point" or "Paris 15 Vaugirard". Places in the same region and country as
+ * the top match are skipped, since their labels would be indistinguishable.
+ * Malformed entries are skipped, never thrown — this list is advisory.
+ */
+export function ambiguousAlternatives(body: unknown, top: GeocodedCity, cityQuery: string): string[] {
+	if (cityQuery.includes(',')) return [];
+	const topName = top.name.toLowerCase();
+	const topLabel = placeLabel(top);
+	const seen = new Set<string>([topLabel]);
+	const candidates = ((body as GeocodeResponse | null)?.results ?? [])
+		.slice(1)
+		.map(toGeocodedCity)
+		.filter((city): city is GeocodedCity & { population: number } => {
+			if (!city || city.population === null || city.name.toLowerCase() !== topName) return false;
+			const bigEnough =
+				city.population >= ALTERNATIVE_MIN_POPULATION ||
+				(top.population !== null && city.population >= top.population * ALTERNATIVE_MIN_SHARE);
+			return bigEnough;
+		})
+		.sort((a, b) => b.population - a.population);
+	const labels: string[] = [];
+	for (const city of candidates) {
+		const label = placeLabel(city);
+		if (seen.has(label)) continue;
+		seen.add(label);
+		labels.push(label);
+		if (labels.length === MAX_ALTERNATIVES) break;
+	}
+	return labels;
 }
 
 interface ArchiveResponse {
@@ -208,7 +291,10 @@ export interface CitySeries {
  * Year without ever pairing a new `history` with an old `recent` — they
  * would overlap on a year and duplicate its points.
  */
-export function cityCacheKeys(city: GeocodedCity, currentYear: number): { history: string; recent: string } {
+export function cityCacheKeys(
+	city: Pick<GeocodedCity, 'latitude' | 'longitude'>,
+	currentYear: number,
+): { history: string; recent: string } {
 	const coords = `${city.latitude.toFixed(2)},${city.longitude.toFixed(2)}`;
 	return {
 		history: `${CITY_CACHE_PREFIX}hist:${currentYear}:${coords}`,
@@ -402,8 +488,11 @@ export async function runCityTemperatureHistory(input: unknown, kv?: KVNamespace
 		);
 	}
 
-	const geocodeUrl = `${GEOCODE_URL}?name=${encodeURIComponent(city.trim())}&count=1`;
-	const geocoded = parseGeocodeJson(await fetchJson(geocodeUrl, 'Open-Meteo geocoding'), city.trim());
+	const cityQuery = city.trim();
+	const geocodeUrl = `${GEOCODE_URL}?name=${encodeURIComponent(cityQuery)}&count=${GEOCODE_MATCHES}`;
+	const geocodeBody = await fetchJson(geocodeUrl, 'Open-Meteo geocoding');
+	const geocoded = parseGeocodeJson(geocodeBody, cityQuery);
+	const alsoMatches = ambiguousAlternatives(geocodeBody, geocoded, cityQuery);
 
 	let points: ChartPoint[];
 	if (granularity === 'weekly') {
@@ -422,12 +511,14 @@ export async function runCityTemperatureHistory(input: unknown, kv?: KVNamespace
 		}
 	}
 
-	const place = geocoded.countryCode ? `${geocoded.name}, ${geocoded.countryCode}` : geocoded.name;
+	const place = placeLabel(geocoded);
 	return {
 		source: 'Open-Meteo',
 		description: `${granularity[0].toUpperCase()}${granularity.slice(1)} mean temperature for ${place} (aggregated from daily means)`,
 		unit: '°C',
 		points,
+		// Only when there's something to say — keeps the tool_result small
+		...(alsoMatches.length > 0 ? { alsoMatches } : {}),
 	};
 }
 
@@ -436,7 +527,10 @@ export const openMeteoToolDefinitions: Tool[] = [
 		name: 'get_city_temperature_history',
 		description:
 			'Get average temperature history for a named city, from Open-Meteo. ' +
-			'The city name is geocoded first; the result includes the resolved city and country. ' +
+			'The city name is geocoded first. The result description names the place actually used ' +
+			'(city, state/region, country) — say which place it is in your answer. ' +
+			'If the result includes alsoMatches, the name was ambiguous: answer for the place used, ' +
+			'name the alternatives, and suggest asking again with the state or country. ' +
 			'Returns {x, y} points where y is the mean temperature in °C and x is the year ' +
 			'(fractional for monthly/weekly points). Granularity is capped by range span: ' +
 			'weekly up to a 3-year span, monthly up to 30 years, annual for the full record since 1940. ' +
@@ -445,7 +539,12 @@ export const openMeteoToolDefinitions: Tool[] = [
 		input_schema: {
 			type: 'object',
 			properties: {
-				city: { type: 'string', description: 'City name, e.g. "Portland" or "Berlin"' },
+				city: {
+					type: 'string',
+					description:
+						'City name. Whenever the user gave a state, region, or country, include it after a comma: ' +
+						'"Portland, Maine", "Paris, France". The comma is required ("Portland Maine" finds nothing).',
+				},
 				granularity: {
 					type: 'string',
 					enum: ['annual', 'monthly', 'weekly'],

@@ -212,6 +212,7 @@ Swift `Codable` structs will decode the expanded shape directly. `ClimateChartDa
 - (c) Refusal and error state visual treatment — TBD
 - (d) Semantic color palette — TBD (semantic names only, e.g. `accent` / `secondaryBackground` — no hex values, so dark mode works)
 - (e) App icon and identity — TBD
+- (f) About / Credits screen — TBD. Must credit **Open-Meteo** and **GeoNames** (both CC BY 4.0, which requires attribution) with licence links; per-answer citations name Open-Meteo but not GeoNames. See R13
 
 **Workflow:** These TBD subsections get filled in from a design iteration done in Claude Design. Its web-based output is visual direction to spec from, not code to port — Phase 4 implements the finished spec idiomatically in SwiftUI, not by porting web markup. The design iteration has no dependency on Phases 1–3 (Worker work) and can run in parallel with them; timebox it to 1–2 evenings.
 
@@ -517,16 +518,23 @@ About **five default annual city questions use up the free tier's whole day**. A
 Open-Meteo would stay the source for non-US cities. Consider this before any wider release, or if 429s show up in practice.
 
 ### R13 — An ambiguous city name silently resolves to the most populous match
-`get_city_temperature_history` geocodes the city name with Open-Meteo's geocoder (`count=1`) and uses the top result. The geocoder ranks by population. Checked 2026-09-24, plain **"Portland"** returns Portland, Oregon (pop. ~653k) ahead of Portland, Maine (~67k), Portland, Indiana and Portland, Texas. So a user in Maine who types just "Portland" gets Oregon's temperatures. Ambiguous names are common (Springfield, Columbus, Richmond, Kansas City, Birmingham UK vs. Birmingham, Alabama).
+`get_city_temperature_history` geocodes the city name with Open-Meteo's geocoding API and uses the top result. That API is built on **GeoNames** data (geonames.org: compiled from NGA, USGS GNIS, Ordnance Survey, Canadian GeoBase and user wiki edits; CC BY 4.0), and the top match is the most populous. Checked 2026-09-24, plain **"Portland"** returns Portland, Oregon (pop. ~653k) ahead of Portland, Maine (~67k), Portland, Indiana and Portland, Texas. So a user in Maine who types just "Portland" got Oregon's temperatures, and the result was labeled only "Portland, US", so neither Claude nor the user could see which state was used.
 
-**It's only partly visible to the user.** The tool labels the result with name and country only (`openMeteo.ts`: `${geocoded.name}, ${geocoded.countryCode}` → "Portland, US"), so neither Claude nor the user sees which *state* was used. A qualified query works: "Portland, Oregon" and "Portland, Maine" resolve correctly. But "Portland Oregon" (no comma) returns no results at all, and the tool reports that as `tool_input_invalid`.
+A qualified query works: "Portland, Maine" and "Portland, ME" resolve correctly. The **comma is required**: "Portland Maine" returns nothing. There was also a second route to the wrong city: the tool's `city` description gave the bare example `"Portland"`, nudging Claude to drop a state the user *had* typed.
 
-**Status: open, not fixed.** Options, cheapest first:
-1. **Add the region to the label**, using the geocoder's `admin1` field ("Portland, Oregon, US"), so Claude can state which Portland it used and the user can catch a wrong guess. A one-line change. It doesn't pick the right city, but it stops the wrong one from being silent.
-2. **Request several matches** (`count=5`), and when the top ones share a name, have the tool report the candidates so Claude can ask the user which one they meant. That's more reliable, but costs a clarifying round and needs a prompt rule for when to ask.
-3. **Resolve on the iOS side** (e.g. an autocomplete picker, or the device's location). That's a Phase 4 UI decision, and would need the UI Design Spec (Section 5) to cover it.
+**Status: fixed 2026-09-24 (options A+B).**
+- **A. The place is always named, and qualifiers are passed through.** The result description labels the place with its region, from the geocoder's `admin1` field: "Portland, Oregon, US" (`placeLabel`). The `city` parameter tells Claude to include any state, region or country the user gave, after a comma. The tool description tells Claude to say which place it used.
+- **B. Ambiguous names list the alternatives.** The geocoder is asked for 10 matches (still one call). When the query has no comma, other places with *exactly* the same name are returned as `alsoMatches` (`ambiguousAlternatives`), and the tool description tells Claude to answer for the place used, name the alternatives, and suggest asking again with the state. A place qualifies if it's at least **5% of the top match's population, or at least 100,000** people. At most **3** are listed, largest first. The percentage keeps Paris, Texas (25k vs. 2.1M) out of every Paris answer. The 100k floor keeps London, Ontario (422k, under 5% of London, England). Exact-name matching drops the geocoder's prefix and alternate-name hits ("Portland Point", "Paris 15 Vaugirard", and Blue Island, IL for "Portland"). Results checked live: Portland → +Maine; London → +Ontario; Birmingham → +Alabama; Columbus → +Georgia, Indiana; Kansas City → +Kansas; Paris and Seattle → none.
+- **Deliberately not built:**
+  - **Asking the user before answering.** Every ambiguous question would cost an extra exchange, which uses a daily question because follow-ups aren't cached, even though most users mean the largest place.
+  - **Preferring the user's own state based on IP location** (Cloudflare `request.cf.region`). It's unreliable on mobile networks and VPNs, makes answers depend on where you are, and would be a privacy-label change.
+  - **An iOS city picker.** That's a Phase 4 UI decision for Section 5.
 
-Option 1 is worth doing regardless of the others. This interacts with the city cache (R12): the cache is keyed on the geocoded coordinates, so a wrong guess is cached as that city's data, which is correct for the city actually looked up, not a separate bug.
+  Revisit these only if real use shows the wrong city keeps getting through.
+
+The city cache (R12) is keyed on the geocoded coordinates, so it's unaffected: each place's data is cached as that place's.
+
+**Attribution (action for Phase 4).** Both data layers here are **CC BY 4.0**, which requires credit: Open-Meteo's weather data (its terms), and GeoNames' place data (geonames.org, surfaced through Open-Meteo's geocoder). Per-answer citations name "Open-Meteo" (Section 7), but that doesn't credit GeoNames. The iOS app needs an About or Credits screen crediting both, with licence links. Add this to the UI Design Spec (Section 5) when it's written.
 
 ---
 
