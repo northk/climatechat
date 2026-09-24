@@ -13,6 +13,7 @@
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
 import { ToolError, fetchOk, readTextBody } from './errors';
+import { parseNumber } from './parse';
 
 const SEA_ICE_BASE = 'https://noaadata.apps.nsidc.org/NOAA/G02135/north/monthly/data';
 
@@ -56,11 +57,13 @@ export function parseSeaIceCsv(csv: string): ChartPoint[] {
 	const points: ChartPoint[] = [];
 	for (const line of lines.slice(1)) {
 		const cells = line.split(',').map((cell) => cell.trim());
-		const year = Number(cells[yearIndex]);
-		const extent = Number(cells[extentIndex]);
+		// parseNumber, not Number(): a blank year cell would otherwise
+		// become year 0, which passes Number.isInteger
+		const year = parseNumber(cells[yearIndex]);
+		const extent = parseNumber(cells[extentIndex]);
 		// Skip unparseable rows and NSIDC's -9999 missing-value sentinel;
 		// real extent is always positive.
-		if (Number.isInteger(year) && Number.isFinite(extent) && extent > 0) {
+		if (year !== null && Number.isInteger(year) && extent !== null && extent > 0) {
 			points.push({ x: year, y: extent });
 		}
 	}

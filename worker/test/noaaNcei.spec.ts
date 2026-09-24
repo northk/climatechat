@@ -41,6 +41,30 @@ describe('parseCagJson - monthly fixture', () => {
 });
 
 describe('parseCagJson - resilience', () => {
+	it('skips missing departures (null, empty, blank, non-numeric) instead of turning them into 0', () => {
+		const points = parseCagJson({
+			data: {
+				'2020': { departure: 1.01 },
+				'2021': { departure: null },
+				'2022': { departure: '' },
+				'2023': { departure: ' ' },
+				'2024': { departure: true },
+				'2025': { departure: [] },
+				'2026': {},
+			},
+		});
+		expect(points).toEqual([{ x: 2020, y: 1.01 }]);
+	});
+
+	it('keeps genuine zero anomalies, as a number or a numeric string', () => {
+		const points = parseCagJson({ data: { '1950': { departure: 0 }, '1951': { departure: '0' }, '1952': { departure: '-0.12' } } });
+		expect(points).toEqual([
+			{ x: 1950, y: 0 },
+			{ x: 1951, y: 0 },
+			{ x: 1952, y: -0.12 },
+		]);
+	});
+
 	it('throws when the "data" object is missing', () => {
 		expect(() => parseCagJson({ description: {} })).toThrow(/no "data"/);
 		expect(() => parseCagJson(null)).toThrow(/no "data"/);
@@ -76,6 +100,20 @@ describe('parseOhcDat - world 700m fixture (1955-2025)', () => {
 });
 
 describe('parseOhcDat - resilience', () => {
+	it('skips a row with a missing field rather than reading a shifted column', () => {
+		const text = [
+			'    YEAR      WO    WOse      NH    NHse',
+			'1955.500  -3.201   1.700  -1.439   0.937',
+			// WO is missing: split on whitespace would put WOse (0.719) in WO's column
+			'1956.500           0.719  -1.843   0.385',
+			'1957.500  -2.100   0.650  -1.500   0.400',
+		].join('\n');
+		expect(parseOhcDat(text, 'WO')).toEqual([
+			{ x: 1955, y: -3.201 },
+			{ x: 1957, y: -2.1 },
+		]);
+	});
+
 	it('selects the requested basin column by name', () => {
 		const pacific = ['YEAR      PO    POse      NP    NPse', '1960.500  -1.877   1.321  -0.984   0.608'].join('\n');
 		expect(parseOhcDat(pacific, 'PO')).toEqual([{ x: 1960, y: -1.877 }]);

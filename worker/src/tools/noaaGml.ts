@@ -9,6 +9,7 @@
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
 import { ToolError, fetchOk, readTextBody } from './errors';
+import { parseNumber } from './parse';
 
 const GML_BASE = 'https://gml.noaa.gov/webdata/ccgg/trends';
 
@@ -64,11 +65,13 @@ export function parseGmlCsv(csv: string, granularity: GmlGranularity): ChartPoin
 	const points: ChartPoint[] = [];
 	for (const line of lines.slice(1)) {
 		const cells = line.split(',');
-		const x = Number(cells[xIndex]);
-		const y = Number(cells[yIndex]);
+		// parseNumber, not Number(): a blank x cell would otherwise become
+		// year 0 (y > 0 below only guards y)
+		const x = parseNumber(cells[xIndex]);
+		const y = parseNumber(cells[yIndex]);
 		// Skip unparseable rows and GML's negative missing-value sentinels
 		// (e.g. -999.99); real concentrations are always positive.
-		if (Number.isFinite(x) && Number.isFinite(y) && y > 0) {
+		if (x !== null && y !== null && y > 0) {
 			points.push({ x, y });
 		}
 	}
