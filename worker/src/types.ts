@@ -48,6 +48,12 @@ export interface ToolDataResult {
 	/** Measurement unit, e.g. "ppm" */
 	unit: string;
 	points: ChartPoint[];
+	/**
+	 * City tool only: other sizeable places with the same name when the
+	 * query was ambiguous, e.g. ["Portland, Maine, US"] (plan R13). Claude
+	 * names them so the user can re-ask with a state or country.
+	 */
+	alsoMatches?: string[];
 }
 
 /** Claude-facing dataset: names the source tool call, never the data. */

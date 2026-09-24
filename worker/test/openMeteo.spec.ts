@@ -15,8 +15,14 @@ import {
 	HISTORY_TTL_SECONDS,
 	RECENT_TTL_SECONDS,
 	sliceSeries,
+	placeLabel,
+	ambiguousAlternatives,
+	qualifierRetries,
+	type GeocodedCity,
 } from '../src/tools/openMeteo';
 import geocodeRaw from './fixtures/open_meteo_geocode.json?raw';
+import ambiguousGeocodeRaw from './fixtures/open_meteo_geocode_ambiguous.json?raw';
+import qualifierRetryGeocodeRaw from './fixtures/open_meteo_geocode_qualifier_retry.json?raw';
 import archiveRaw from './fixtures/open_meteo_archive.json?raw';
 
 const archiveFixture: unknown = JSON.parse(archiveRaw);
@@ -28,6 +34,8 @@ describe('parseGeocodeJson - Portland fixture', () => {
 		expect(city.countryCode).toBe('US');
 		expect(city.latitude).toBeCloseTo(45.52, 1);
 		expect(city.longitude).toBeCloseTo(-122.68, 1);
+		expect(city.region).toBe('Oregon');
+		expect(city.population).toBe(652503);
 	});
 
 	it('throws a descriptive error when the city is not found', () => {
@@ -36,8 +44,111 @@ describe('parseGeocodeJson - Portland fixture', () => {
 		expect(() => parseGeocodeJson({ results: [] }, 'Xyzzyville')).toThrow(/no results/);
 	});
 
+	it('tells Claude to qualify with a comma only for a multi-word name without one', () => {
+		const hint = /put it after a comma, e\.g\. "Portland, Oregon"/;
+		expect(() => parseGeocodeJson({}, 'Portlnd Oregon')).toThrow(hint);
+		expect(() => parseGeocodeJson({}, 'Portlnd')).not.toThrow(hint);
+		expect(() => parseGeocodeJson({}, 'Portlnd, Oregon')).not.toThrow(hint);
+	});
+
 	it('throws on a malformed result entry', () => {
 		expect(() => parseGeocodeJson({ results: [{ name: 'X' }] }, 'X')).toThrow(/malformed/);
+	});
+});
+
+describe('placeLabel', () => {
+	const base: GeocodedCity = { name: 'Portland', latitude: 0, longitude: 0, countryCode: 'US', region: 'Oregon', population: null };
+
+	it('names city, region, and country', () => {
+		expect(placeLabel(base)).toBe('Portland, Oregon, US');
+	});
+
+	it('drops a missing region or country', () => {
+		expect(placeLabel({ ...base, region: '' })).toBe('Portland, US');
+		expect(placeLabel({ ...base, countryCode: '' })).toBe('Portland, Oregon');
+	});
+
+	it('drops a region identical to the name', () => {
+		expect(placeLabel({ ...base, name: 'Singapore', region: 'Singapore', countryCode: 'SG' })).toBe('Singapore, SG');
+	});
+});
+
+describe('ambiguousAlternatives - live geocoder responses (R13)', () => {
+	const fixtures = JSON.parse(ambiguousGeocodeRaw) as Record<'portland' | 'london' | 'paris', unknown>;
+	const alternativesFor = (body: unknown, query: string) => ambiguousAlternatives(body, parseGeocodeJson(body, query), query);
+
+	it('Portland → Oregon, flags Maine (~10% of its population) but not the small Portlands', () => {
+		expect(parseGeocodeJson(fixtures.portland, 'Portland').region).toBe('Oregon');
+		expect(alternativesFor(fixtures.portland, 'Portland')).toEqual(['Portland, Maine, US']);
+	});
+
+	it('ignores non-exact name matches the geocoder returns (Blue Island, IL comes back for "Portland")', () => {
+		expect(alternativesFor(fixtures.portland, 'Portland').join()).not.toContain('Blue Island');
+	});
+
+	it('London → England, flags London, Ontario via the 100k floor though it is under 5% of London, England', () => {
+		expect(alternativesFor(fixtures.london, 'London')).toEqual(['London, Ontario, CA']);
+	});
+
+	it('Paris → France, no alternatives: Paris, Texas is ~1% of it and under 100k', () => {
+		expect(alternativesFor(fixtures.paris, 'Paris')).toEqual([]);
+	});
+
+	it('lists nothing when the user already qualified the name with a comma', () => {
+		expect(alternativesFor(fixtures.portland, 'Portland, Oregon')).toEqual([]);
+	});
+});
+
+describe('ambiguousAlternatives - rules', () => {
+	const place = (name: string, region: string, countryCode: string, population: number | null) => ({
+		name,
+		latitude: 1,
+		longitude: 1,
+		country_code: countryCode,
+		admin1: region,
+		population,
+	});
+	const alternativesFor = (results: unknown[], query = 'Springfield') => {
+		const body = { results };
+		return ambiguousAlternatives(body, parseGeocodeJson(body, query), query);
+	};
+
+	it('caps the list at 3, most populous first, whatever order the geocoder used', () => {
+		expect(
+			alternativesFor([
+				place('Springfield', 'Missouri', 'US', 169176),
+				place('Springfield', 'Ohio', 'US', 58662),
+				place('Springfield', 'Illinois', 'US', 114394),
+				place('Springfield', 'Massachusetts', 'US', 155929),
+				place('Springfield', 'Oregon', 'US', 62256),
+			]),
+		).toEqual(['Springfield, Massachusetts, US', 'Springfield, Illinois, US', 'Springfield, Oregon, US']);
+	});
+
+	it('skips same-named places whose population is unknown, or whose label matches the top one', () => {
+		expect(
+			alternativesFor([
+				place('Springfield', 'Missouri', 'US', 169176),
+				place('Springfield', 'Missouri', 'US', 50000),
+				place('Springfield', 'Colorado', 'US', null),
+			]),
+		).toEqual([]);
+	});
+
+	it('skips malformed entries instead of throwing — the list is advisory', () => {
+		expect(
+			alternativesFor([
+				place('Springfield', 'Missouri', 'US', 169176),
+				{ name: 'Springfield' },
+				place('Springfield', 'Illinois', 'US', 114394),
+			]),
+		).toEqual(['Springfield, Illinois, US']);
+	});
+
+	it('matches names case-insensitively', () => {
+		expect(alternativesFor([place('Springfield', 'Missouri', 'US', 169176), place('SPRINGFIELD', 'Illinois', 'US', 114394)])).toEqual([
+			'SPRINGFIELD, Illinois, US',
+		]);
 	});
 });
 
@@ -133,6 +244,125 @@ describe('aggregateArchive - resilience', () => {
 		const partial = syntheticDays(fullYearDates(2021).slice(0, 3), 15);
 		const body = { daily: { time: partial.time, temperature_2m_mean: partial.temps } };
 		expect(() => aggregateArchive(body, 'monthly')).toThrow(/no complete monthly periods/);
+	});
+});
+
+describe('runCityTemperatureHistory - ambiguous names end to end (R13)', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	const fixtures = JSON.parse(ambiguousGeocodeRaw) as Record<'portland' | 'paris', unknown>;
+
+	/** Geocoder returns `geocodeBody`; the archive returns the Portland 2022-2023 fixture. Records geocoder URLs. */
+	function stubGeocoder(geocodeBody: unknown): string[] {
+		const geocodeUrls: string[] = [];
+		vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+			const url = String(input instanceof Request ? input.url : input);
+			if (url.includes('geocoding-api')) {
+				geocodeUrls.push(url);
+				return Promise.resolve(Response.json(geocodeBody));
+			}
+			return Promise.resolve(new Response(archiveRaw, { status: 200 }));
+		});
+		return geocodeUrls;
+	}
+
+	// Weekly: a single uncached archive fetch, so the city cache stays out of it
+	const weekly = { granularity: 'weekly', start_year: 2022, end_year: 2023 };
+
+	it('asks for 10 matches, labels the place with its state, and lists the alternatives', async () => {
+		const geocodeUrls = stubGeocoder(fixtures.portland);
+		const result = await runCityTemperatureHistory({ city: 'Portland', ...weekly });
+		expect(geocodeUrls[0]).toContain('count=10');
+		expect(result.description).toContain('Portland, Oregon, US');
+		expect(result.alsoMatches).toEqual(['Portland, Maine, US']);
+	});
+
+	it('leaves alsoMatches out entirely when the name is not ambiguous', async () => {
+		stubGeocoder(fixtures.paris);
+		const result = await runCityTemperatureHistory({ city: 'Paris', ...weekly });
+		expect(result.description).toContain('Paris, Île-de-France Region, FR');
+		expect('alsoMatches' in result).toBe(false);
+	});
+});
+
+describe('qualifierRetries', () => {
+	it('tries a comma before the last word, then before the last two', () => {
+		expect(qualifierRetries('Kansas City Missouri')).toEqual(['Kansas City, Missouri', 'Kansas, City Missouri']);
+		expect(qualifierRetries('Springfield North Carolina')).toEqual(['Springfield North, Carolina', 'Springfield, North Carolina']);
+	});
+
+	it('offers only the one-word split for a two-word name', () => {
+		expect(qualifierRetries('Portland Oregon')).toEqual(['Portland, Oregon']);
+	});
+
+	it('collapses repeated whitespace', () => {
+		expect(qualifierRetries('Portland   OR')).toEqual(['Portland, OR']);
+	});
+
+	it('offers nothing for a single word or an already-qualified name', () => {
+		expect(qualifierRetries('Portland')).toEqual([]);
+		expect(qualifierRetries('Portland, Oregon')).toEqual([]);
+	});
+});
+
+describe('runCityTemperatureHistory - comma retries end to end (R13)', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	// Live geocoder responses keyed by query, captured 2026-09-24
+	const responses = JSON.parse(qualifierRetryGeocodeRaw) as Record<string, unknown>;
+
+	/** Serve each geocoder query its captured response ({} if not captured); record the queries in order. */
+	function stubGeocoderByQuery(): string[] {
+		const queries: string[] = [];
+		vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+			const url = new URL(input instanceof Request ? input.url : String(input));
+			if (url.hostname.startsWith('geocoding-api')) {
+				const query = url.searchParams.get('name') ?? '';
+				queries.push(query);
+				return Promise.resolve(Response.json(responses[query] ?? {}));
+			}
+			return Promise.resolve(new Response(archiveRaw, { status: 200 }));
+		});
+		return queries;
+	}
+
+	const weekly = { granularity: 'weekly', start_year: 2022, end_year: 2023 };
+
+	it.each([
+		['Portland Oregon', ['Portland Oregon', 'Portland, Oregon'], 'Portland, Oregon, US'],
+		['Portland OR', ['Portland OR', 'Portland, OR'], 'Portland, Oregon, US'],
+		['Kansas City Missouri', ['Kansas City Missouri', 'Kansas City, Missouri'], 'Kansas City, Missouri, US'],
+		[
+			'Springfield North Carolina',
+			['Springfield North Carolina', 'Springfield North, Carolina', 'Springfield, North Carolina'],
+			'Springfield, North Carolina, US',
+		],
+	])('"%s" resolves via a comma retry, stopping at the first split that matches', async (city, expectedQueries, place) => {
+		const queries = stubGeocoderByQuery();
+		const result = await runCityTemperatureHistory({ city, ...weekly });
+		expect(queries).toEqual(expectedQueries);
+		expect(result.description).toContain(place);
+		// The matched query was qualified, so no "also matches" list
+		expect('alsoMatches' in result).toBe(false);
+	});
+
+	it('makes no retries when the name is found as sent', async () => {
+		const queries = stubGeocoderByQuery();
+		await runCityTemperatureHistory({ city: 'Portland, Oregon', ...weekly });
+		expect(queries).toEqual(['Portland, Oregon']);
+	});
+
+	it('when every split fails (a typo), errors with the original query and the comma hint', async () => {
+		const queries = stubGeocoderByQuery();
+		await expect(runCityTemperatureHistory({ city: 'Portlnd Oregon', ...weekly })).rejects.toMatchObject({
+			toolErrorClass: 'tool_input_invalid',
+			message: expect.stringMatching(/no results for city "Portlnd Oregon"\. If it names a state/) as string,
+		});
+		expect(queries).toEqual(['Portlnd Oregon', 'Portlnd, Oregon']);
 	});
 });
 
@@ -248,8 +478,7 @@ describe('runCityTemperatureHistory - city series cache (R12)', () => {
 		return archiveRanges;
 	}
 
-	const keysFor = (latitude: number, year = 2024) =>
-		cityCacheKeys({ name: 'Portland', latitude, longitude: -122.67621, countryCode: 'US' }, year);
+	const keysFor = (latitude: number, year = 2024) => cityCacheKeys({ latitude, longitude: -122.67621 }, year);
 
 	it('fills both segments on a miss, then serves annual AND monthly from KV', async () => {
 		const archiveRanges = stubOpenMeteo(10.11);
