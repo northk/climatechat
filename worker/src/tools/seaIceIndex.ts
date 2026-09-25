@@ -13,7 +13,7 @@
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
 import { ToolError, fetchOk, readTextBody } from './errors';
-import { parseNumber } from './parse';
+import { checkSeries, parseNumber } from './parse';
 
 const SEA_ICE_BASE = 'https://noaadata.apps.nsidc.org/NOAA/G02135/north/monthly/data';
 
@@ -84,7 +84,14 @@ export async function runArcticSeaIce(input: unknown): Promise<ToolDataResult> {
 	const url = `${SEA_ICE_BASE}/N_${paddedMonth}_extent_v4.0.csv`;
 	const response = await fetchOk(url, 'NSIDC sea ice');
 
-	const points = parseSeaIceCsv(await readTextBody(response, 'NSIDC sea ice'));
+	// Measured 2026-09-24: 47–48 rows for every month (since 1979),
+	// 3.6–16.3 million km². The floor is ~85% of that.
+	const points = checkSeries(parseSeaIceCsv(await readTextBody(response, 'NSIDC sea ice')), {
+		source: `NSIDC sea ice (month ${month})`,
+		unit: 'million km²',
+		range: [0, 20],
+		minPoints: 40,
+	});
 	return {
 		source: 'NSIDC/NOAA Sea Ice Index',
 		description: `Arctic sea ice extent each ${MONTH_NAMES[month - 1]} since 1979`,

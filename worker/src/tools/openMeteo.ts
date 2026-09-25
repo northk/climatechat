@@ -30,6 +30,7 @@ import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
 import { ToolError, fetchJson } from './errors';
 import { logError } from '../log';
+import { checkSeries } from './parse';
 
 const GEOCODE_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const ARCHIVE_URL = 'https://archive-api.open-meteo.com/v1/archive';
@@ -561,6 +562,12 @@ export async function runCityTemperatureHistory(input: unknown, kv?: KVNamespace
 			throw new ToolError('tool_parse_failed', `Open-Meteo archive: no complete ${granularity} periods in the requested range`);
 		}
 	}
+
+	// Range only: the count depends on the requested span and granularity.
+	// The bounds enclose Earth's recorded air-temperature extremes (−89.2 °C,
+	// Vostok; 56.7 °C, Death Valley), and these are weekly-or-longer means,
+	// so a value outside them means a unit change (e.g. K), not weather.
+	checkSeries(points, { source: `Open-Meteo archive (${granularity})`, unit: '°C', range: [-90, 60] });
 
 	const place = placeLabel(geocoded);
 	return {

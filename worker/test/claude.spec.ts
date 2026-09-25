@@ -9,6 +9,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { Message, MessageCreateParamsNonStreaming } from '@anthropic-ai/sdk/resources/messages';
 import { askClaude, parseEnvelope, MODEL, MAX_TOKENS, FALLBACK_ANSWER, LOOP_BUDGET_MS } from '../src/claude';
 import type { ToolDataResult } from '../src/types';
+import { parseGmlCsv } from '../src/tools/noaaGml';
+import co2AnnualCsv from './fixtures/co2_annmean_gl.csv?raw';
+import co2MonthlyCsv from './fixtures/co2_mm_gl.csv?raw';
 
 const usage = { input_tokens: 100, output_tokens: 50 };
 
@@ -88,9 +91,9 @@ describe('askClaude - tool-use loop', () => {
 		// Round 1: Claude calls get_co2_levels. We can't let the real handler
 		// fetch, so the tool call uses an invalid granularity... no — this is
 		// the happy path: use a valid input but stub fetch at the module level.
-		// Simpler and honest: intercept globalThis.fetch with the fixture CSV.
-		const csv = 'year,mean,unc\n1979,336.85,0.10\n1980,338.91,0.07';
-		const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(csv, { status: 200 }));
+		// Simpler and honest: intercept globalThis.fetch with the real fixture
+		// CSV (a full record — the GML tool now rejects implausibly short ones)
+		const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(co2AnnualCsv, { status: 200 }));
 
 		const chartJson = JSON.stringify({
 			type: 'chart',
@@ -122,10 +125,7 @@ describe('askClaude - tool-use loop', () => {
 					source: 'NOAA GML',
 					description: 'Global atmospheric CO2 (annual mean)',
 					unit: 'ppm',
-					data: [
-						{ x: 1979, y: 336.85 },
-						{ x: 1980, y: 338.91 },
-					],
+					data: parseGmlCsv(co2AnnualCsv, 'annual'),
 				},
 			],
 			explanation: 'CO2 rose from 336.85 to 338.91 ppm (NOAA GML).',
@@ -185,21 +185,22 @@ describe('askClaude - tool-use loop', () => {
 		const gate = new Promise<void>((resolve) => {
 			openGate = resolve;
 		});
-		const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+		const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
 			started++;
 			await gate; // hold every fetch open until the test releases it
-			return new Response('year,mean,unc\n1979,336.85,0.10\n1980,338.91,0.07', { status: 200 });
+			const url = String(input instanceof Request ? input.url : input);
+			return new Response(url.includes('_mm_') ? co2MonthlyCsv : co2AnnualCsv, { status: 200 });
 		});
 
 		const { create, calls } = scriptedCreator([
 			toolUseResponse([
 				{ id: 'a', name: 'get_co2_levels', input: { granularity: 'annual' } },
-				{ id: 'b', name: 'get_methane_levels', input: { granularity: 'annual' } },
+				{ id: 'b', name: 'get_co2_levels', input: { granularity: 'monthly' } },
 			]),
 			textResponse('{"type":"text","answer":"done"}'),
 		]);
 
-		const done = askClaude(user('compare CO2 and methane trends'), create);
+		const done = askClaude(user('compare annual and monthly CO2'), create);
 		await new Promise((resolve) => setTimeout(resolve, 0)); // let both mapped fns reach their await
 		expect(started).toBe(2); // sequential execution would show 1 here
 		openGate();
@@ -418,7 +419,7 @@ describe('askClaude - wall-clock budget', () => {
 	});
 
 	it('passes the same deadline signal to every Claude call', async () => {
-		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('year,mean,unc\n1979,336.85,0.10', { status: 200 }));
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(co2AnnualCsv, { status: 200 }));
 		const { create } = scriptedCreator([
 			toolUseResponse([{ id: 'a', name: 'get_co2_levels', input: { granularity: 'annual' } }]),
 			textResponse('{"type":"text","answer":"ok"}'),

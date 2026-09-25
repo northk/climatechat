@@ -9,7 +9,7 @@
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
 import { ToolError, fetchOk, readTextBody } from './errors';
-import { parseNumber } from './parse';
+import { checkSeries, parseNumber } from './parse';
 
 const GML_BASE = 'https://gml.noaa.gov/webdata/ccgg/trends';
 
@@ -21,12 +21,40 @@ interface GasConfig {
 	slug: string;
 	gasLabel: string;
 	unit: 'ppm' | 'ppb';
+	/** Sanity limits (checkSeries): ~85% of the rows measured live 2026-09-24, and a wide plausible range */
+	minPoints: Record<GmlGranularity, number>;
+	range: [number, number];
 }
 
+// Record lengths differ a lot by gas — GML's global N2O series starts in
+// 2001 (25 annual rows) vs 1979 for CO2 (47) — so each gets its own floor.
+// Measured 2026-09-24: CO2 47/570 rows, 334–429 ppm; CH4 42/515, 1626–1946
+// ppb; N2O 25/305, 316–340 ppb (annual/monthly).
 const GASES: GasConfig[] = [
-	{ toolName: 'get_co2_levels', slug: 'co2', gasLabel: 'CO2', unit: 'ppm' },
-	{ toolName: 'get_methane_levels', slug: 'ch4', gasLabel: 'CH4', unit: 'ppb' },
-	{ toolName: 'get_nitrous_oxide_levels', slug: 'n2o', gasLabel: 'N2O', unit: 'ppb' },
+	{
+		toolName: 'get_co2_levels',
+		slug: 'co2',
+		gasLabel: 'CO2',
+		unit: 'ppm',
+		minPoints: { annual: 40, monthly: 480 },
+		range: [250, 700],
+	},
+	{
+		toolName: 'get_methane_levels',
+		slug: 'ch4',
+		gasLabel: 'CH4',
+		unit: 'ppb',
+		minPoints: { annual: 36, monthly: 440 },
+		range: [1000, 3000],
+	},
+	{
+		toolName: 'get_nitrous_oxide_levels',
+		slug: 'n2o',
+		gasLabel: 'N2O',
+		unit: 'ppb',
+		minPoints: { annual: 20, monthly: 260 },
+		range: [250, 450],
+	},
 ];
 
 function gmlUrl(slug: string, granularity: GmlGranularity): string {
@@ -103,7 +131,12 @@ export async function runGmlTool(toolName: string, input: unknown): Promise<Tool
 	}
 
 	const response = await fetchOk(gmlUrl(gas.slug, granularity), 'NOAA GML');
-	const points = parseGmlCsv(await readTextBody(response, 'NOAA GML'), granularity);
+	const points = checkSeries(parseGmlCsv(await readTextBody(response, 'NOAA GML'), granularity), {
+		source: `NOAA GML ${gas.gasLabel} (${granularity})`,
+		unit: gas.unit,
+		range: gas.range,
+		minPoints: gas.minPoints[granularity],
+	});
 	return {
 		source: 'NOAA GML',
 		description: `Global atmospheric ${gas.gasLabel} (${granularity} mean)`,
