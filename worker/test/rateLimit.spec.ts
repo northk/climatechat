@@ -5,8 +5,8 @@
  */
 
 import { env } from 'cloudflare:test';
-import { describe, it, expect } from 'vitest';
-import { checkAndIncrement, DAILY_LIMIT } from '../src/rateLimit';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { checkAndIncrement, DAILY_LIMIT, readCounter } from '../src/rateLimit';
 
 const DAY_1 = new Date('2026-08-10T08:00:00Z');
 const DAY_1_LATER = new Date('2026-08-10T23:59:59Z');
@@ -48,5 +48,49 @@ describe('checkAndIncrement', () => {
 		}
 		expect((await checkAndIncrement(env.CLIMATE_KV, '203.0.113.4', DAY_1)).allowed).toBe(false);
 		expect((await checkAndIncrement(env.CLIMATE_KV, '203.0.113.5', DAY_1)).allowed).toBe(true);
+	});
+});
+
+describe('readCounter - malformed stored values (Codex review)', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('reads a valid count, and a missing key as 0 without logging', () => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		expect(readCounter('3')).toBe(3);
+		expect(readCounter('0')).toBe(0);
+		expect(readCounter(null)).toBe(0);
+		expect(errorSpy).not.toHaveBeenCalled();
+	});
+
+	it.each(['bad', 'NaN', '', '-3', '2.5', 'Infinity'])('treats %j as 0 and logs kv_counter_invalid', (stored) => {
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		expect(readCounter(stored)).toBe(0);
+		expect(JSON.parse(errorSpy.mock.calls[0][0] as string)).toEqual({
+			class: 'kv_counter_invalid',
+			message: 'rate-limit counter held a non-integer value; reset to 0',
+		});
+	});
+});
+
+describe('checkAndIncrement - a malformed counter no longer fails open forever', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('resets a "NaN" counter, heals the key, and enforces the limit again', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const ip = '203.0.113.9';
+		const key = `rl:${ip}:2026-08-10`;
+		await env.CLIMATE_KV.put(key, 'NaN');
+
+		expect(await checkAndIncrement(env.CLIMATE_KV, ip, DAY_1)).toEqual({ allowed: true, count: 1 });
+		expect(await env.CLIMATE_KV.get(key)).toBe('1');
+		for (let i = 2; i <= DAILY_LIMIT; i++) {
+			await checkAndIncrement(env.CLIMATE_KV, ip, DAY_1);
+		}
+		// Before the fix, "NaN" was written back each time and this was allowed
+		expect((await checkAndIncrement(env.CLIMATE_KV, ip, DAY_1)).allowed).toBe(false);
 	});
 });

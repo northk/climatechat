@@ -19,7 +19,7 @@ import { askClaude } from './claude';
 import { logError } from './log';
 import { cacheGet, cacheSet } from './cache';
 import { checkAndIncrement, DAILY_LIMIT } from './rateLimit';
-import type { WorkerResponse } from './types';
+import type { ErrorResponse, WorkerResponse } from './types';
 
 /**
  * Input-size limits (plan steps 47/49, pulled forward from Phase 6 —
@@ -39,6 +39,12 @@ export const MAX_BODY_LENGTH = 120_000; // headroom over MAX_MESSAGES worth of M
 // SPIKE scaffolding — Durable Object classes must be exported from the entry
 // module. Remove along with src/spikeCounter.ts when the spike is torn down.
 export { SpikeCounter } from './spikeCounter';
+
+/** A non-200 response in the one error shape (Section 4's ErrorResponse). */
+function errorResponse(status: number, error: string, headers?: HeadersInit): Response {
+	const body: ErrorResponse = { error };
+	return Response.json(body, { status, headers });
+}
 
 /** Constant-time string compare — no first-mismatch timing oracle on the secret. */
 function timingSafeEqual(a: string, b: string): boolean {
@@ -92,7 +98,7 @@ type AskFn = (messages: MessageParam[]) => Promise<WorkerResponse>;
 export async function handleAsk(request: Request, env: Env, ask: AskFn): Promise<Response> {
 	// 1. Client verification — before touching KV at all
 	if (!verifyClient(request, env)) {
-		return Response.json({ error: 'Unauthorized' }, { status: 401 });
+		return errorResponse(401, 'Unauthorized');
 	}
 
 	// 2. Body validation. Read as text first so oversized bodies are
@@ -101,20 +107,17 @@ export async function handleAsk(request: Request, env: Env, ask: AskFn): Promise
 	// JSON.parse on a huge payload.
 	const rawBody = await request.text();
 	if (rawBody.length > MAX_BODY_LENGTH) {
-		return Response.json({ error: `Request body too large (max ${MAX_BODY_LENGTH} characters)` }, { status: 413 });
+		return errorResponse(413, `Request body too large (max ${MAX_BODY_LENGTH} characters)`);
 	}
 	let body: unknown;
 	try {
 		body = JSON.parse(rawBody);
 	} catch {
-		return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+		return errorResponse(400, 'Invalid JSON body');
 	}
 	const messages = parseMessages(body);
 	if (!messages) {
-		return Response.json(
-			{ error: 'Body must be {"messages": [{"role": "user" | "assistant", "content": "..."}]} ending with a user turn' },
-			{ status: 400 },
-		);
+		return errorResponse(400, 'Body must be {"messages": [{"role": "user" | "assistant", "content": "..."}]} ending with a user turn');
 	}
 
 	// 3. Cache read (single-turn only, R9) — a hit never touches the
@@ -128,10 +131,7 @@ export async function handleAsk(request: Request, env: Env, ask: AskFn): Promise
 	const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
 	const decision = await checkAndIncrement(env.CLIMATE_KV, ip);
 	if (!decision.allowed) {
-		return Response.json(
-			{ error: `You've reached your daily limit of ${DAILY_LIMIT} questions. Your quota resets at midnight UTC.` },
-			{ status: 429 },
-		);
+		return errorResponse(429, `You've reached your daily limit of ${DAILY_LIMIT} questions. Your quota resets at midnight UTC.`);
 	}
 
 	// 5. Claude loop → 6. cache write (single-turn only; never refusals)
@@ -144,10 +144,10 @@ export default {
 	async fetch(request, env): Promise<Response> {
 		const url = new URL(request.url);
 		if (url.pathname !== '/ask') {
-			return Response.json({ error: 'Not found' }, { status: 404 });
+			return errorResponse(404, 'Not found');
 		}
 		if (request.method !== 'POST') {
-			return Response.json({ error: 'Method not allowed' }, { status: 405, headers: { Allow: 'POST' } });
+			return errorResponse(405, 'Method not allowed', { Allow: 'POST' });
 		}
 
 		try {
@@ -159,7 +159,7 @@ export default {
 			// Top-level catch (step 24): the R2/5xx path the iOS app maps to
 			// its Worker-error state
 			logError('unhandled', { message: error instanceof Error ? error.message : String(error) });
-			return Response.json({ error: 'Service error — please try again.' }, { status: 500 });
+			return errorResponse(500, 'Service error — please try again.');
 		}
 	},
 } satisfies ExportedHandler<Env>;
