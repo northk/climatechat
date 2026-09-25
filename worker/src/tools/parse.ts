@@ -13,6 +13,9 @@
  * is about the input's *form*, not its value.
  */
 
+import type { ChartPoint } from '../types';
+import { ToolError } from './errors';
+
 /**
  * A finite number, or a non-blank string that `Number()` converts in full
  * to a finite number → that number. Anything else — null, undefined, "",
@@ -29,4 +32,49 @@ export function parseNumber(value: unknown): number | null {
 	if (typeof value !== 'string' || value.trim() === '') return null;
 	const parsed = Number(value);
 	return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Sanity limits for one returned series (Codex review). The parsers only
+ * fail when *zero* points survive, so an upstream change that breaks most
+ * rows — or switches units, which is the likelier drift — would otherwise
+ * produce a thin or wrongly-scaled chart that looks normal, now labeled
+ * with our unit (Section 4). Failing here files it as tool_parse_failed,
+ * the drift signal, instead.
+ */
+export interface SeriesLimits {
+	/** Citation-style prefix for the error, e.g. "NOAA GML CO2 (annual)" */
+	source: string;
+	unit: string;
+	/**
+	 * Plausible y range, deliberately wide: it must never reject real data,
+	 * only catch a unit or scale change (ppm→ppb, °C→K, km²→thousand km²).
+	 */
+	range: [min: number, max: number];
+	/**
+	 * Fewest points a healthy response has — only for series that always
+	 * return their full record, set ~85% of the count measured live. Omit
+	 * for range-requested series, where the count depends on the request.
+	 */
+	minPoints?: number;
+}
+
+/** Throw tool_parse_failed if the series is implausibly short or any value is out of range; else return it. */
+export function checkSeries(points: ChartPoint[], limits: SeriesLimits): ChartPoint[] {
+	const { source, unit, range, minPoints } = limits;
+	if (minPoints !== undefined && points.length < minPoints) {
+		throw new ToolError(
+			'tool_parse_failed',
+			`${source}: only ${points.length} data points, expected at least ${minPoints} — possible upstream format change`,
+		);
+	}
+	const [min, max] = range;
+	const outlier = points.find((point) => point.y < min || point.y > max);
+	if (outlier) {
+		throw new ToolError(
+			'tool_parse_failed',
+			`${source}: value ${outlier.y} ${unit} is outside the plausible range ${min} to ${max} — possible upstream unit or format change`,
+		);
+	}
+	return points;
 }

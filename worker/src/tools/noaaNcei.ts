@@ -10,7 +10,7 @@
 import type { Tool } from '@anthropic-ai/sdk/resources/messages';
 import type { ChartPoint, ToolDataResult } from '../types';
 import { ToolError, fetchOk, fetchJson, readTextBody } from './errors';
-import { parseNumber } from './parse';
+import { checkSeries, parseNumber } from './parse';
 
 const CAG_BASE = 'https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series/globe/land_ocean';
 const OHC_BASE = 'https://www.ncei.noaa.gov/data/oceans/woa/DATA_ANALYSIS/3M_HEAT_CONTENT/DATA/basin/yearly';
@@ -95,7 +95,13 @@ export async function runSurfaceTemperature(input: unknown): Promise<ToolDataRes
 	// Annual = 12-month averages ending in December (12/12); monthly = 1/0
 	const scalePath = scale === 'annual' ? '12/12' : '1/0';
 	const url = `${CAG_BASE}/${scalePath}/${start}-${end}.json`;
-	const points = parseCagJson(await fetchJson(url, 'NOAA NCEI CAG'));
+	// Range only: the count depends on the requested years. Measured
+	// 2026-09-24 over 1850–2026: −0.42..1.25 °C annual, −0.66..1.40 monthly.
+	const points = checkSeries(parseCagJson(await fetchJson(url, 'NOAA NCEI CAG')), {
+		source: `NOAA NCEI surface temperature (${scale})`,
+		unit: '°C',
+		range: [-5, 5],
+	});
 	return {
 		source: 'NOAA NCEI (NOAAGlobalTemp)',
 		description: `Global land+ocean surface temperature anomaly vs. 1901–2000 average (${scale})`,
@@ -103,6 +109,18 @@ export async function runSurfaceTemperature(input: unknown): Promise<ToolDataRes
 		points,
 	};
 }
+
+/**
+ * Count floors for the OHC files (checkSeries), only where measured. The
+ * world 0–700m fixture has 71 yearly rows (1955 on; −5.7..22.8 ×10²² J), so
+ * its floor is ~85% of that. The other seven files couldn't be measured —
+ * NCEI's file server returned 503s and timeouts on 2026-09-24 — and the
+ * 0–2000m series start decades later, so guessing a floor could break a
+ * working tool. They get the range check only until measured (plan R14).
+ */
+const OHC_MIN_POINTS: Partial<Record<`${OhcBasin}-${'700m' | '2000m'}`, number>> = {
+	'world-700m': 60,
+};
 
 const OHC_BASIN_CONFIG: Record<OhcBasin, { fileCode: string; column: string; label: string }> = {
 	world: { fileCode: 'w0', column: 'WO', label: 'World' },
@@ -178,7 +196,12 @@ export async function runOceanHeatContent(input: unknown): Promise<ToolDataResul
 	const url = `${OHC_BASE}/h22-${basinConfig.fileCode}-${depth === '700m' ? '700' : '2000'}m.dat`;
 	const response = await fetchOk(url, 'NOAA NCEI OHC');
 
-	const points = parseOhcDat(await readTextBody(response, 'NOAA NCEI OHC'), basinConfig.column);
+	const points = checkSeries(parseOhcDat(await readTextBody(response, 'NOAA NCEI OHC'), basinConfig.column), {
+		source: `NOAA NCEI OHC (${basin}, ${depth})`,
+		unit: '10²² J',
+		range: [-200, 200],
+		minPoints: OHC_MIN_POINTS[`${basin}-${depth}`],
+	});
 	return {
 		source: 'NOAA NCEI',
 		description: `${basinConfig.label} ocean heat content anomaly, 0–${depth} (annual)`,
