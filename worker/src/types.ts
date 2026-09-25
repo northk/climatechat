@@ -100,3 +100,13 @@ export interface ChartResponse extends ChartResponseBase {
 
 /** Everything the Worker may send to the iOS app. */
 export type WorkerResponse = TextResponse | RefusalResponse | ChartResponse;
+
+/**
+ * Every non-200 response body (plan Section 4): a separate shape from
+ * WorkerResponse, carried with a 4xx/5xx status. iOS switches on the HTTP
+ * status (step 36's APIError), not on this body; `error` is a
+ * human-readable message.
+ */
+export interface ErrorResponse {
+	error: string;
+}
