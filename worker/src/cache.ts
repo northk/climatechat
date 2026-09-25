@@ -33,11 +33,12 @@ export function cacheableQuestion(messages: MessageParam[]): string | null {
 }
 
 /**
- * TTL selection (8.2): long-term-trend phrasings get 24h — the answer
- * doesn't change day to day; everything else (current-state and
- * city-specific questions) gets 1h. Keyword heuristic, deliberately
- * simple: misclassification costs at most a stale-by-hours answer,
- * bounded by the 24h ceiling.
+ * TTL selection (8.2), by phrasing only: long-term-trend wording gets
+ * 24h — the answer doesn't change day to day — and everything else
+ * (current-state questions) gets 1h. City questions follow the same rule:
+ * a city trend answer comes from annual data and is as stable as a global
+ * one. Keyword heuristic, deliberately simple: misclassification costs at
+ * most a stale-by-hours answer, bounded by the 24h ceiling.
  */
 export function selectTtl(question: string): number {
 	const trendPattern =
