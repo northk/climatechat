@@ -122,7 +122,7 @@ Rules the card must follow:
 - **The axis unit comes from the datasets' `unit`**, not from `yLabel`. `yLabel` can be
   shown only as a descriptive subtitle.
 - `description` is the authoritative "what is this series" text; decide where it lives
-  (under the legend, in a caption, or revealed on tap).
+  (under the legend or in a caption; tapping the chart is taken, see Full-screen view).
 - **Mixed units → separate stacked charts.** If a chart's datasets have different units
   (CO₂ in ppm and methane in ppb), draw one plot per unit, stacked inside the same card,
   sharing the title and explanation. Datasets with the same unit share one plot.
@@ -134,8 +134,45 @@ Rules the card must follow:
 - Must stay legible at the largest Dynamic Type sizes and in dark mode, with enough
   contrast between up to ~3 series.
 
+**Readability, from Apple's HIG Charts guidance:**
+- **The words carry the main message.** The `explanation` sits with the chart as full,
+  wrapping text, so nobody has to decode the plot to get the point (like Weather's
+  "Chance of light rain in the next hour" above its chart).
+- **The data is the most prominent element**; titles, axes and grid lines support it
+  without competing.
+- **The plot uses the full available width.** Keep y-axis tick labels short and put the
+  unit in the title or legend rather than repeating it on every tick.
+- **Few grid lines, light labels:** the drag readout supplies exact values, so the plot
+  doesn't need dense gridlines or many ticks.
+- **VoiceOver on long series moves through groups of values** (e.g. by decade) rather
+  than all ~170 points one by one.
+
+**Large text sizes. These are this project's rules, beyond the HIG:**
+- **Text leaves the plot area.** At accessibility sizes the title, legend, units and
+  explanation sit above and below the plot as full-width wrapping text; inside the plot
+  only a few short tick labels remain (e.g. 1960 / 1990 / 2020).
+- **The plot's height grows moderately with text size, with a minimum**, so it never
+  becomes a thin strip squeezed between large blocks of text.
+- **Heavier lines under Bold Text or Increase Contrast**, so the data stays visible for
+  users who need stronger contrast.
+
+**Full-screen view.** **Tapping a chart opens it full-screen**, the one way to make
+the plot itself bigger, and most useful for large-text and low-vision users. It adds
+to drag-to-inspect rather than replacing it: in the card, a tap opens full-screen and a
+drag inspects values.
+- Shows the same chart (all stacked plots for a mixed-unit chart) with its title, units,
+  legend, sources and explanation, and supports drag-to-inspect.
+- Works in portrait and **landscape**. Rotating to landscape is the natural way to give a
+  long time series more width.
+- A clear, standard close control (the system sheet/cover dismissal), with no gesture
+  that conflicts with dragging across the plot.
+- Discoverable without relying on the tap alone (e.g. a small expand glyph on the card),
+  and available to VoiceOver as a named action ("Open full-screen chart").
+- All the accessibility and large-text rules above apply here too.
+
 Show the card with: one line series, two series with the same unit, a mixed-unit pair
-(stacked), and a bar chart.
+(stacked), and a bar chart. Show the full-screen view in portrait and landscape, and the
+card at the default text size and at AX5.
 
 ### 5. Refusal (off-topic question)
 When someone asks something unrelated to climate ("write me a haiku about pizza"), the
@@ -175,7 +212,7 @@ leave room for one, but it isn't required in this pass.
 - The semantic colour palette (named roles for background, bubbles, accent, chart series,
   refusal, error, informational states), in both light and dark.
 - The chart card layout: title, plot(s), legend, units, attribution, explanation, drag
-  readout.
+  readout, expand affordance, and the full-screen chart view.
 - Refusal and error visual treatments.
 - App icon direction, in the current HIG format: a **layered icon** (foreground layers
   over a background, assembled in Xcode's Icon Composer) with **default, dark, clear and
