@@ -140,8 +140,16 @@ describe('selectTtl (8.2)', () => {
 		expect(selectTtl('How much ice is in the Arctic right now?')).toBe(3600);
 	});
 
-	it('gives city-specific questions 1 hour', () => {
+	it('gives current-state city questions 1 hour', () => {
 		expect(selectTtl('Is Portland getting hotter?')).toBe(3600);
 		expect(selectTtl('What is the average temperature in Berlin?')).toBe(3600);
+	});
+
+	it('decides by phrasing, not by city: a city trend question gets 24 hours (8.2)', () => {
+		// The case Codex flagged: an earlier plan said "city → always 1h",
+		// which the code never did. City trend answers come from annual
+		// data through the last complete year — as stable as global ones.
+		expect(selectTtl('How has Portland changed since 1980?')).toBe(86400);
+		expect(selectTtl("What's the temperature trend in Berlin?")).toBe(86400);
 	});
 });
