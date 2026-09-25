@@ -18,6 +18,8 @@ export type ErrorClass =
 	| 'claude_timeout'
 	/** A KV read/write for a data cache failed, or held a corrupt entry. Never fails the answer — it only costs a refetch (R12). */
 	| 'kv_cache_failed'
+	/** A stored rate-limit counter wasn't a non-negative integer; reset to 0 rather than left to fail open forever. */
+	| 'kv_counter_invalid'
 	| 'unhandled';
 
 export function logError(errorClass: ErrorClass, fields: { tool?: string; upstreamStatus?: number; message: string }): void {
