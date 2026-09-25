@@ -57,11 +57,17 @@ These are HIG requirements, not nice-to-haves. Show how the design meets each on
   piece of text as an iOS text style (Large Title, Headline, Body, Callout, Footnote,
   Caption…), **never as a fixed point size**, including chart titles, axis labels,
   legends, the drag readout and button labels. Mockup font sizes are illustrations at
-  the default setting, not values to copy. Never cap the text size to protect a layout:
-  instead, layouts must reflow at the largest **accessibility** sizes (e.g. side-by-side
-  elements stack vertically, chart axes show fewer tick labels, long text wraps rather
-  than truncating). Show the key screens at the default size and at the largest
-  accessibility size.
+  the default setting, not values to copy. At the largest setting (AX5) body text is
+  53 pt, about 3× the default (HIG Typography). **Content text is never capped or
+  truncated:** answers, questions, example questions, error messages, the chart drag
+  readout and the credits all grow fully, and layouts reflow instead (side-by-side
+  elements stack vertically; long text wraps). In particular, **chat bubbles widen
+  toward the full screen width at accessibility sizes**, or 53 pt text gets squeezed to
+  a few characters per line. **Controls in fixed-size bars may stay their normal size**
+  (the ⓘ button, the send button) but must support the system **Large Content Viewer**,
+  which shows an enlarged copy when a large-text user long-presses them. Chart axis tick
+  labels may be limited in size and reduced in number, since the drag readout and
+  VoiceOver carry exact values. Show the key screens at the default size and at AX5.
 - **Tap targets at least 44×44 pt**, including the example-question buttons and the ⓘ
   button.
 - **Contrast meets WCAG AA** for text and chart marks in both light and dark
