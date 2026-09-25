@@ -106,7 +106,7 @@ describe('askClaude - tool-use loop', () => {
 			textResponse(chartJson),
 		]);
 
-		const result = await askClaude(user('Chart CO2 since 1979'), create);
+		const { response: result } = await askClaude(user('Chart CO2 since 1979'), create);
 		fetchSpy.mockRestore();
 
 		expect(result).toEqual({
@@ -147,7 +147,7 @@ describe('askClaude - tool-use loop', () => {
 			textResponse('{"type":"text","answer":"I could not retrieve CO2 data right now."}'),
 		]);
 
-		const result = await askClaude(user('CO2 level?'), create);
+		const { response: result } = await askClaude(user('CO2 level?'), create);
 		expect(result).toEqual({ type: 'text', answer: 'I could not retrieve CO2 data right now.' });
 
 		const round2 = calls[1];
@@ -166,7 +166,7 @@ describe('askClaude - tool-use loop', () => {
 			toolUseResponse([{ id: `toolu_${i}`, name: 'get_co2_levels', input: { granularity: 'weekly' } }]),
 		);
 		const { create } = scriptedCreator(endless);
-		const result = await askClaude(user('CO2?'), create);
+		const { response: result } = await askClaude(user('CO2?'), create);
 		expect(result.type).toBe('text');
 		expect(create).toHaveBeenCalledTimes(7);
 	});
@@ -175,7 +175,7 @@ describe('askClaude - tool-use loop', () => {
 		const { create } = scriptedCreator([
 			textResponse('{"type":"refusal","answer":"ClimateChat only answers climate questions. Try: what is the current CO2 level?"}'),
 		]);
-		const result = await askClaude(user('Write me a haiku about pizza'), create);
+		const { response: result } = await askClaude(user('Write me a haiku about pizza'), create);
 		expect(result.type).toBe('refusal');
 	});
 
@@ -234,6 +234,31 @@ describe('askClaude - error classification (step 16)', () => {
 		const logged = await loggedErrorFor({ id: 't0', name: 'get_co2_levels', input: { granularity: 'annual' } });
 		expect(logged.class).toBe('tool_fetch_failed');
 		expect(logged.upstreamStatus).toBeUndefined();
+	});
+
+	/** Run one tool_use round (block), then a text round; return askClaude's upstreamFailed flag. */
+	async function upstreamFailedFor(block: { id: string; name: string; input: unknown }): Promise<boolean> {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		const { create } = scriptedCreator([
+			toolUseResponse([block]),
+			textResponse('{"type":"text","answer":"The data could not be retrieved."}'),
+		]);
+		return (await askClaude(user('climate question'), create)).upstreamFailed;
+	}
+
+	it('flags upstreamFailed when a data source is down (so the answer is not cached)', async () => {
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('nope', { status: 503 }));
+		expect(await upstreamFailedFor({ id: 'u1', name: 'get_co2_levels', input: { granularity: 'annual' } })).toBe(true);
+	});
+
+	it('flags upstreamFailed when a source returns an unparseable body', async () => {
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<html>maintenance</html>', { status: 200 }));
+		expect(await upstreamFailedFor({ id: 'u2', name: 'get_co2_levels', input: { granularity: 'annual' } })).toBe(true);
+	});
+
+	it("does not flag Claude's own mistakes (bad input, unknown tool) — those answers stay cacheable", async () => {
+		expect(await upstreamFailedFor({ id: 'u3', name: 'get_co2_levels', input: { granularity: 'hourly' } })).toBe(false);
+		expect(await upstreamFailedFor({ id: 'u4', name: 'get_rainfall_totals', input: {} })).toBe(false);
 	});
 
 	it('files a hallucinated tool name as unknown_tool, not tool_parse_failed', async () => {
@@ -440,7 +465,7 @@ describe('askClaude - wall-clock budget', () => {
 		);
 		const done = askClaude(user('CO2?'), create, { deadline: controller.signal });
 		controller.abort();
-		expect(await done).toEqual({ type: 'text', answer: FALLBACK_ANSWER });
+		expect((await done).response).toEqual({ type: 'text', answer: FALLBACK_ANSWER });
 		const logged = JSON.parse(errorSpy.mock.calls[0][0] as string) as Record<string, unknown>;
 		expect(logged.class).toBe('claude_timeout');
 	});

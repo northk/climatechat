@@ -33,7 +33,7 @@ function askRequest(body: unknown, headers: Record<string, string> = {}): Reques
 
 const question = (text: string) => ({ messages: [{ role: 'user', content: text }] });
 const textAnswer: WorkerResponse = { type: 'text', answer: '424 ppm (NOAA GML).' };
-const stubAsk = (response: WorkerResponse = textAnswer) => vi.fn().mockResolvedValue(response);
+const stubAsk = (response: WorkerResponse = textAnswer, upstreamFailed = false) => vi.fn().mockResolvedValue({ response, upstreamFailed });
 
 describe('routing and client verification (SELF, real Worker)', () => {
 	it('returns 404 off /ask and 405 for non-POST', async () => {
@@ -215,6 +215,26 @@ describe('handleAsk pipeline ordering (stubbed Claude)', () => {
 		await handleAsk(askRequest({ messages }, { 'CF-Connecting-IP': ip }), env, ask);
 		expect(ask).toHaveBeenCalledTimes(2);
 		expect(await cacheGet(env.CLIMATE_KV, messages)).toBeNull();
+	});
+
+	it('does not cache an answer from a request where a data source failed, and serves the fresh answer', async () => {
+		const messages = [{ role: 'user', content: 'How has global temperature changed since 1900? [p6]' }] as MessageParam[];
+		const outageAnswer: WorkerResponse = { type: 'text', answer: 'NOAA NCEI data could not be retrieved right now.' };
+		const ask = stubAsk(outageAnswer, true);
+		const ip = '198.51.100.6';
+		const first = await handleAsk(askRequest({ messages }, { 'CF-Connecting-IP': ip }), env, ask);
+		expect(await first.json()).toEqual(outageAnswer);
+		// Nothing cached, so the next ask goes back to Claude once the source recovers
+		expect(await cacheGet(env.CLIMATE_KV, messages)).toBeNull();
+		await handleAsk(askRequest({ messages }, { 'CF-Connecting-IP': ip }), env, ask);
+		expect(ask).toHaveBeenCalledTimes(2);
+	});
+
+	it('still caches a normal answer (upstreamFailed false)', async () => {
+		const messages = [{ role: 'user', content: 'How has global temperature changed since 1900? [p7]' }] as MessageParam[];
+		const ask = stubAsk();
+		await handleAsk(askRequest({ messages }, { 'CF-Connecting-IP': '198.51.100.7' }), env, ask);
+		expect(await cacheGet(env.CLIMATE_KV, messages)).toEqual(textAnswer);
 	});
 
 	it('skips the cache entirely for multi-turn requests (R9)', async () => {

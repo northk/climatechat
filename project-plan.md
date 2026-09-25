@@ -420,7 +420,7 @@ What that defers, precisely: the spend-cap figure, the per-question cost estimat
 **This deferral has a trigger, not a reminder:** see the model-change gate on step 40. Changing `MODEL` is one line of code but four coupled assumptions, three of which fail silently — do not treat it as a free swap.
 
 ### 8.2 Answer caching via Cloudflare KV
-The single highest-leverage control for this app. Climate data changes slowly — "what is the current CO₂ level?" asked by 500 users today could cost one Anthropic call instead of 500. Cache key = normalized question hash, **single-turn questions only** (see R9 — a question-text hash can't safely represent a follow-up, since the same wording means different things depending on conversation history), and **never for `type: "refusal"` responses** — each unique off-topic question would otherwise waste a KV write on an answer that's cheap to regenerate anyway. Also **never cache a degraded answer** — the R2 `FALLBACK_ANSWER` text that `askClaude` returns when a round-cap is hit, Claude's final JSON is unparseable, or a chart `sourceToolCallId` doesn't resolve. Those are transient failures; writing one to KV serves the generic error string to every user asking that question for up to the TTL (24h for a trend phrasing), long after the underlying hiccup cleared. `cacheSet` recognizes it by identity against the exported `FALLBACK_ANSWER` constant. TTLs:
+The single highest-leverage control for this app. Climate data changes slowly — "what is the current CO₂ level?" asked by 500 users today could cost one Anthropic call instead of 500. Cache key = normalized question hash, **single-turn questions only** (see R9 — a question-text hash can't safely represent a follow-up, since the same wording means different things depending on conversation history), and **never for `type: "refusal"` responses** — each unique off-topic question would otherwise waste a KV write on an answer that's cheap to regenerate anyway. Also **never cache a degraded answer** — the R2 `FALLBACK_ANSWER` text that `askClaude` returns when a round-cap is hit, Claude's final JSON is unparseable, or a chart `sourceToolCallId` doesn't resolve. Those are transient failures; writing one to KV serves the generic error string to every user asking that question for up to the TTL (24h for a trend phrasing), long after the underlying hiccup cleared. `cacheSet` recognizes it by identity against the exported `FALLBACK_ANSWER` constant. **Also never cache an answer from a request where a data source failed** (added 2026-09-24): `askClaude` returns `upstreamFailed`, true when any tool call failed with `tool_fetch_failed`, `tool_parse_failed` or `unhandled`, and `index.ts` skips `cacheSet` in that case. Such an answer typically says the data couldn't be retrieved, which is true now but not in ten minutes. Most questions that hit NCEI are trend-phrased, so a brief outage would otherwise serve "data unavailable" to everyone for the full 24h TTL. Claude's own tool mistakes (`tool_input_invalid`, `unknown_tool`) don't count: Claude usually corrects them next round, and the final answer is as cacheable as any other. TTLs:
 - **24 hours** — questions *phrased* as a long-term trend ("has temperature risen since 1900?", "how has Portland changed since 1980?"): the answer is the same every day
 - **1 hour** — everything else, i.e. current-state questions ("what is the CO₂ level today?", "how hot has Portland been this week?")
 
@@ -579,6 +579,21 @@ A qualified query works: "Portland, Maine" and "Portland, ME" resolve correctly.
 The city cache (R12) is keyed on the geocoded coordinates, so it's unaffected: each place's data is cached as that place's.
 
 **Attribution (action for Phase 4).** Both data layers here are **CC BY 4.0**, which requires credit: Open-Meteo's weather data (its terms), and GeoNames' place data (geonames.org, surfaced through Open-Meteo's geocoder). Per-answer citations name "Open-Meteo" (Section 7), but that doesn't credit GeoNames. The iOS app needs an About or Credits screen crediting both, with licence links. Add this to the UI Design Spec (Section 5) when it's written.
+
+### R14 — A data source outage makes its topics unavailable
+Observed 2026-09-24: NOAA NCEI (`www.ncei.noaa.gov`, which hosts both the global surface temperature series and the ocean heat content files) timed out and then returned **HTTP 503** for several minutes while other NOAA hosts (GML) answered normally. Each source is a single point of failure for its own topics: an NCEI outage means global-temperature and ocean-heat questions can't be answered, while CO₂/CH₄/N₂O (GML), sea ice (NSIDC) and city (Open-Meteo) questions are unaffected.
+
+**What already limits the damage:**
+- Each fetch gives up after 5s (step 46), so nothing hangs.
+- The failure is logged as `tool_fetch_failed`.
+- Claude says plainly that the data couldn't be retrieved (Section 7 rule 2).
+- The answer is **not cached** (8.2), so users get real data again as soon as the source recovers.
+
+The remaining cost: during an outage, those questions fail, and each still uses one of the user's daily questions.
+
+**Option, not yet decided: serve the last good copy.** The NCEI, GML and NSIDC series change at most monthly (daily for GML's newest points). The Worker could keep the last successful copy of each series in KV, like the Open-Meteo city cache (R12), and serve it when the live fetch fails, with an "as of" date in the tool result so Claude can say how current it is. That would make most outages invisible to users.
+- **Cost:** a few KV writes a day (one per series refreshed), a date field in the tool result, and the cache logic in `tools/`.
+- **Decide** based on how often outages actually occur. `tool_fetch_failed` counts per tool in Workers Logs are the evidence.
 
 ---
 

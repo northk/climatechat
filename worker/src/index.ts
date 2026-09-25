@@ -15,11 +15,11 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
-import { askClaude } from './claude';
+import { askClaude, type AskResult } from './claude';
 import { logError } from './log';
 import { cacheGet, cacheSet } from './cache';
 import { checkAndIncrement, DAILY_LIMIT } from './rateLimit';
-import type { ErrorResponse, WorkerResponse } from './types';
+import type { ErrorResponse } from './types';
 
 /**
  * Input-size limits (plan steps 47/49, pulled forward from Phase 6 —
@@ -88,7 +88,7 @@ export function parseMessages(body: unknown): MessageParam[] | null {
 	return messages as MessageParam[];
 }
 
-type AskFn = (messages: MessageParam[]) => Promise<WorkerResponse>;
+type AskFn = (messages: MessageParam[]) => Promise<AskResult>;
 
 /**
  * The /ask pipeline with the Claude call injected, so tests can stub it
@@ -134,9 +134,13 @@ export async function handleAsk(request: Request, env: Env, ask: AskFn): Promise
 		return errorResponse(429, `You've reached your daily limit of ${DAILY_LIMIT} questions. Your quota resets at midnight UTC.`);
 	}
 
-	// 5. Claude loop → 6. cache write (single-turn only; never refusals)
-	const response = await ask(messages);
-	await cacheSet(env.CLIMATE_KV, messages, response);
+	// 5. Claude loop → 6. cache write (single-turn only; never refusals,
+	// never an answer from a request where a data source failed — it may
+	// say "couldn't retrieve", which stops being true once the source is back)
+	const { response, upstreamFailed } = await ask(messages);
+	if (!upstreamFailed) {
+		await cacheSet(env.CLIMATE_KV, messages, response);
+	}
 	return Response.json(response);
 }
 
