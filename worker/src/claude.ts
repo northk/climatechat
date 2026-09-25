@@ -55,6 +55,28 @@ export const LOOP_BUDGET_MS = 45_000;
  */
 export const FALLBACK_ANSWER = 'Sorry — something went wrong while putting that answer together. Please try asking again.';
 
+/** askClaude's outcome: the envelope for iOS, plus what the answer cache needs to know. */
+export interface AskResult {
+	response: WorkerResponse;
+	/**
+	 * True if a tool call in this request failed upstream (source down,
+	 * timed out, or its format changed). The answer may then say "couldn't
+	 * retrieve the data" — true right now, wrong in ten minutes — so it must
+	 * not be cached (8.2): a brief NCEI outage would otherwise serve "data
+	 * unavailable" to everyone for up to the 24h trend TTL.
+	 */
+	upstreamFailed: boolean;
+}
+
+/**
+ * Tool failure classes that make an answer depend on *when* it was asked.
+ * tool_input_invalid and unknown_tool are Claude's own mistakes — it
+ * usually corrects them next round, and the final answer is as cacheable
+ * as any other. 'unhandled' (a handler crashed) is treated as upstream to
+ * be safe.
+ */
+const UPSTREAM_FAILURES: ReadonlySet<ErrorClass> = new Set<ErrorClass>(['tool_fetch_failed', 'tool_parse_failed', 'unhandled']);
+
 export type MessageCreator = (params: MessageCreateParamsNonStreaming, options: { signal: AbortSignal }) => Promise<Message>;
 
 /** Put a cache_control breakpoint on the last content block of the last message. */
@@ -70,7 +92,8 @@ function withCacheBreakpoint(messages: MessageParam[]): MessageParam[] {
 
 /**
  * Run the full tool-use loop for a conversation and return the public
- * response envelope. `messages` is the incoming user/assistant history
+ * response envelope, plus whether any data source failed along the way
+ * (AskResult). `messages` is the incoming user/assistant history
  * (iOS sends plain text turns). `deadline` is injectable so tests can
  * abort it; production uses LOOP_BUDGET_MS. `kv` is handed to the tools
  * for the Open-Meteo city series cache (R12).
@@ -79,9 +102,10 @@ export async function askClaude(
 	messages: MessageParam[],
 	createMessage: MessageCreator,
 	{ deadline = AbortSignal.timeout(LOOP_BUDGET_MS), kv }: { deadline?: AbortSignal; kv?: KVNamespace } = {},
-): Promise<WorkerResponse> {
+): Promise<AskResult> {
 	const conversation: MessageParam[] = [...messages];
 	const toolResults = new Map<string, ToolDataResult>();
+	let upstreamFailed = false;
 
 	for (let round = 1; round <= MAX_ROUNDS; round++) {
 		let response: Message;
@@ -103,7 +127,7 @@ export async function askClaude(
 			// error still propagates to index.ts's 500 path.
 			if (deadline.aborted) {
 				logError('claude_timeout', { message: `agent loop exceeded its ${LOOP_BUDGET_MS}ms budget in round ${round}` });
-				return { type: 'text', answer: FALLBACK_ANSWER };
+				return { response: { type: 'text', answer: FALLBACK_ANSWER }, upstreamFailed };
 			}
 			throw error;
 		}
@@ -132,6 +156,7 @@ export async function askClaude(
 						const errorClass: ErrorClass = error instanceof ToolError ? error.toolErrorClass : 'unhandled';
 						const upstreamStatus = error instanceof ToolError ? error.upstreamStatus : undefined;
 						logError(errorClass, { tool: block.name, upstreamStatus, message });
+						if (UPSTREAM_FAILURES.has(errorClass)) upstreamFailed = true;
 						// is_error tool_result: Claude sees the failure and answers
 						// per Section 7 ("say so plainly") instead of crashing the request
 						return { type: 'tool_result', tool_use_id: block.id, content: message, is_error: true };
@@ -146,11 +171,11 @@ export async function askClaude(
 			.filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
 			.map((block) => block.text)
 			.join('');
-		return parseEnvelope(text, toolResults);
+		return { response: parseEnvelope(text, toolResults), upstreamFailed };
 	}
 
 	logError('unhandled', { message: `tool-use loop exceeded ${MAX_ROUNDS} rounds without a final answer` });
-	return { type: 'text', answer: FALLBACK_ANSWER };
+	return { response: { type: 'text', answer: FALLBACK_ANSWER }, upstreamFailed };
 }
 
 function isChartDatasetList(value: unknown): value is ClaudeChartDataset[] {
